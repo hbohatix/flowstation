@@ -4,5 +4,5 @@
   <text x="32" y="54" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="38" font-weight="700" fill="#ffffff" text-anchor="middle">F</text>
 
   <!-- Wordmark: FlowStation -->
-  <text x="82" y="53" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="32" font-weight="600" fill="#ffffff" letter-spacing="-0.5">FlowStation</text>
+  <text x="82" y="53" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="32" font-weight="600" fill="#0d1117" letter-spacing="-0.5">FlowStation</text>
 </svg>
