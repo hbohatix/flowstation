@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 80" width="360" height="80">
+  <!-- Icon: teal rounded square with F -->
+  <rect x="0" y="8" width="64" height="64" rx="14" ry="14" fill="#00C9A7"/>
+  <text x="32" y="54" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="38" font-weight="700" fill="#ffffff" text-anchor="middle">F</text>
+
+  <!-- Wordmark: FlowStation -->
+  <text x="82" y="53" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="32" font-weight="600" fill="#ffffff" letter-spacing="-0.5">FlowStation</text>
+</svg>

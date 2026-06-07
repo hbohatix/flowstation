@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="contrib/logo/bluestation_with_name.png" alt="FlowStation" width="320"/>
+<img src="contrib/logo/flowstation_logo.svg" alt="FlowStation" width="320"/>
 
 ### Software-defined TETRA base station — built in Rust, runs on a Raspberry Pi.
 
