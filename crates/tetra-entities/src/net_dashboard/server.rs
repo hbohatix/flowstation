@@ -1275,8 +1275,49 @@ impl DashboardServer {
                 } => {
                     s.push_sds_log(direction, *source_issi, *dest_issi, *is_group, *protocol_id, text.clone());
                 }
-                TelemetryEvent::TsVoiceActivity { .. } => {
-                    // Handled below with rate limiting — no state update needed
+                TelemetryEvent::TsVoiceActivity {
+                    carrier_num,
+                    ts,
+                    speaker_issi,
+                } => {
+                    // The authenticated dashboard gets these frames directly over WS, but the
+                    // anonymous public dashboard intentionally polls /api/public instead. Mirror
+                    // the live RF speaker into CallEntry so polling clients see the same operator.
+                    //
+                    // Do NOT append Last Heard on every voice frame: only a genuine speaker change
+                    // produces a new activity row.
+                    let changed = s
+                        .calls
+                        .values_mut()
+                        .find(|c| {
+                            (c.carrier_num == *carrier_num && c.ts == *ts)
+                                || (c.peer_carrier_num == Some(*carrier_num) && c.peer_ts == Some(*ts))
+                        })
+                        .and_then(|c| {
+                            if c.speaker_issi == Some(*speaker_issi) {
+                                return None;
+                            }
+                            c.speaker_issi = Some(*speaker_issi);
+                            let dest = if c.is_group {
+                                c.gssi
+                            } else if *speaker_issi == c.caller_issi {
+                                c.called_issi
+                            } else {
+                                c.caller_issi
+                            };
+                            Some((c.is_group, dest))
+                        });
+
+                    if let Some((is_group, dest)) = changed {
+                        if let Some(e) = s.ms_map.get_mut(speaker_issi) {
+                            e.selected_group = if is_group { Some(dest) } else { None };
+                        }
+                        s.push_last_heard(
+                            *speaker_issi,
+                            if is_group { "call_group" } else { "call_individual" },
+                            dest,
+                        );
+                    }
                 }
                 TelemetryEvent::TxVisual {
                     sample_rate,
@@ -1920,7 +1961,7 @@ fn handle_connection(
                     || req_line.starts_with("GET /api/public?")
                     || req_line == "GET /api/public HTTP/1.1")
             {
-                serve_public_snapshot(inner, &state, &radioid);
+                serve_public_snapshot(inner, &state, &radioid, shared_config.as_ref());
                 return;
             }
 
@@ -4010,6 +4051,7 @@ fn serve_public_snapshot(
     stream: TcpStream,
     state: &DashboardState,
     radioid: &crate::net_dashboard::radioid::RadioIdCache,
+    shared_config: Option<&tetra_config::bluestation::SharedConfig>,
 ) {
     let body = match state.read() {
         Ok(s) => {
@@ -4017,6 +4059,31 @@ fn serve_public_snapshot(
             let group_calls = s.calls.values().filter(|c| c.is_group).count();
             let individual_calls = active_calls - group_calls;
             let center_freq_hz = s.last_tx_visual.as_ref().map(|v| v.center_freq_hz);
+
+            // Explicit public projection of RF/cell identity. Read the already-parsed immutable
+            // config; never serialize StackConfig itself, so credentials/secrets cannot leak.
+            let cell = shared_config.map(|shared| {
+                let cfg = shared.config();
+                let carriers = cfg
+                    .bs_phase_mod_carriers()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(carrier, dl_hz, ul_hz)| {
+                        serde_json::json!({
+                            "carrier": carrier,
+                            "tx_dl_hz": dl_hz,
+                            "rx_ul_hz": ul_hz,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                serde_json::json!({
+                    "mcc": cfg.net.mcc,
+                    "mnc": cfg.net.mnc,
+                    "main_carrier": cfg.cell.main_carrier,
+                    "secondary_carrier": cfg.cell.secondary_carrier,
+                    "carriers": carriers,
+                })
+            });
 
             let calls = s
                 .calls
@@ -4081,6 +4148,7 @@ fn serve_public_snapshot(
                 "brew_online": s.brew_online,
                 "brew_version": s.brew_version,
                 "stack_version": tetra_core::STACK_VERSION,
+                "cell": cell,
                 "calls": calls,
                 "last_heard": last_heard,
             })
