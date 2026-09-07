@@ -9095,6 +9095,40 @@ function renderPublicCalls(calls){
     return '<tr><td><code>'+ts+'</code></td><td>'+type+'</td><td>'+callerHtml+'</td><td>'+target+'</td><td><span class="num accent">'+formatDur(c.started_secs_ago||0)+'</span></td></tr>';
   }).join('');
 }
+function setPublicConnectionStatus(d){
+  // Public mode intentionally has no WebSocket. A successful /api/public response itself proves
+  // that the FlowStation dashboard process is alive, so mirror that as BS ONLINE instead of
+  // leaving the WS-driven controls in their boot-time OFFLINE state.
+  const connLed=document.getElementById('connLed');
+  const connText=document.getElementById('connText');
+  if(connLed)connLed.classList.add('on');
+  if(connText){connText.textContent=t('online');connText.style.color='var(--accent)';}
+
+  state.brewOnline=!!d.brew_online;
+  state.brewVer=Number(d.brew_version||0);
+
+  const brewLed=document.getElementById('brewLed');
+  const brewText=document.getElementById('brewText');
+  const brewBadge=document.getElementById('brewVerBadge');
+  if(state.brewOnline){
+    if(brewLed)brewLed.classList.add('on');
+    if(brewText){brewText.textContent=t('brew_online');brewText.style.color='var(--accent2)';}
+    if(brewBadge){
+      brewBadge.textContent='v'+state.brewVer;
+      brewBadge.style.display='inline-block';
+      brewBadge.style.background=state.brewVer>=1?'rgba(0,212,168,0.15)':'rgba(255,178,36,0.15)';
+      brewBadge.style.color=state.brewVer>=1?'var(--accent)':'var(--warn)';
+      brewBadge.style.border='1px solid '+(state.brewVer>=1?'rgba(0,212,168,0.4)':'rgba(255,178,36,0.4)');
+    }
+  }else{
+    if(brewLed)brewLed.classList.remove('on');
+    if(brewText){brewText.textContent=t('brew_offline');brewText.style.color='var(--text2)';}
+    if(brewBadge)brewBadge.style.display='none';
+  }
+
+  syncTopbarChips();
+}
+
 function renderPublicLastHeard(entries){
   const tb=document.getElementById('pub-lastheard-tbody');if(!tb)return;
   const arr=entries||[];
@@ -9121,6 +9155,7 @@ async function pollPublic(){
     setT('pub-rf',d.rf_active?'Active':'Idle');
     setT('pub-brew',d.brew_online?'Online':'Offline');
     setT('pub-ver',d.stack_version||'—');
+    setPublicConnectionStatus(d);
     const STAT_STATES=['is-ok','is-idle','is-info','is-warn','is-danger'];
     const rfc=document.getElementById('pub-rf-card');
     if(rfc){rfc.classList.remove(...STAT_STATES);rfc.classList.add(d.rf_active?'is-ok':'is-idle');}
