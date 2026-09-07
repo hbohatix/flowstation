@@ -1280,43 +1280,49 @@ impl DashboardServer {
                     ts,
                     speaker_issi,
                 } => {
-                    // The authenticated dashboard gets these frames directly over WS, but the
-                    // anonymous public dashboard intentionally polls /api/public instead. Mirror
-                    // the live RF speaker into CallEntry so polling clients see the same operator.
-                    //
-                    // Do NOT append Last Heard on every voice frame: only a genuine speaker change
-                    // produces a new activity row.
-                    let changed = s
-                        .calls
-                        .values_mut()
-                        .find(|c| {
-                            (c.carrier_num == *carrier_num && c.ts == *ts)
-                                || (c.peer_carrier_num == Some(*carrier_num) && c.peer_ts == Some(*ts))
-                        })
-                        .and_then(|c| {
-                            if c.speaker_issi == Some(*speaker_issi) {
-                                return None;
-                            }
-                            c.speaker_issi = Some(*speaker_issi);
-                            let dest = if c.is_group {
-                                c.gssi
-                            } else if *speaker_issi == c.caller_issi {
-                                c.called_issi
-                            } else {
-                                c.caller_issi
-                            };
-                            Some((c.is_group, dest))
-                        });
+                    // speaker_issi is optional: some PHY activity frames can identify the occupied
+                    // traffic slot without attributing it to an ISSI. Only an attributed voice
+                    // frame may update the public/current speaker.
+                    if let Some(speaker_issi) = *speaker_issi {
+                        // The authenticated dashboard gets these frames directly over WS, but the
+                        // anonymous public dashboard intentionally polls /api/public instead.
+                        // Mirror the live RF speaker into CallEntry so polling clients see the same
+                        // operator.
+                        //
+                        // Do NOT append Last Heard on every voice frame: only a genuine speaker
+                        // change produces a new activity row.
+                        let changed = s
+                            .calls
+                            .values_mut()
+                            .find(|c| {
+                                (c.carrier_num == *carrier_num && c.ts == *ts)
+                                    || (c.peer_carrier_num == Some(*carrier_num) && c.peer_ts == Some(*ts))
+                            })
+                            .and_then(|c| {
+                                if c.speaker_issi == Some(speaker_issi) {
+                                    return None;
+                                }
+                                c.speaker_issi = Some(speaker_issi);
+                                let dest = if c.is_group {
+                                    c.gssi
+                                } else if speaker_issi == c.caller_issi {
+                                    c.called_issi
+                                } else {
+                                    c.caller_issi
+                                };
+                                Some((c.is_group, dest))
+                            });
 
-                    if let Some((is_group, dest)) = changed {
-                        if let Some(e) = s.ms_map.get_mut(speaker_issi) {
-                            e.selected_group = if is_group { Some(dest) } else { None };
+                        if let Some((is_group, dest)) = changed {
+                            if let Some(e) = s.ms_map.get_mut(&speaker_issi) {
+                                e.selected_group = if is_group { Some(dest) } else { None };
+                            }
+                            s.push_last_heard(
+                                speaker_issi,
+                                if is_group { "call_group" } else { "call_individual" },
+                                dest,
+                            );
                         }
-                        s.push_last_heard(
-                            *speaker_issi,
-                            if is_group { "call_group" } else { "call_individual" },
-                            dest,
-                        );
                     }
                 }
                 TelemetryEvent::TxVisual {
