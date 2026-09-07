@@ -265,6 +265,33 @@ a.callsign:hover{
 .public-table .callsign{margin-left:0;}
 .public-table td,.public-table th{white-space:nowrap;}
 .public-table td:last-child,.public-table th:last-child{white-space:normal;}
+.public-lastheard-table th:nth-child(1),
+.public-lastheard-table td:nth-child(1),
+.public-lastheard-table th:nth-child(2),
+.public-lastheard-table td:nth-child(2),
+.public-lastheard-table th:nth-child(3),
+.public-lastheard-table td:nth-child(3),
+.public-lastheard-table th:nth-child(4),
+.public-lastheard-table td:nth-child(4){
+  width:1%;
+}
+.public-lastheard-table th:nth-child(2),
+.public-lastheard-table td:nth-child(2){padding-right:6px;}
+.public-lastheard-table th:nth-child(3),
+.public-lastheard-table td:nth-child(3){padding-left:6px;}
+.public-calls-wrap{
+  --public-call-rows:3;
+  height:calc(33px + (var(--public-call-rows) * 34px));
+  overflow-y:auto;
+}
+.public-call-placeholder td{
+  height:34px;
+  padding-top:0;
+  padding-bottom:0;
+  color:transparent;
+  user-select:none;
+}
+.public-call-placeholder:hover td{background:transparent;}
 .public-mode .sidebar-nav{display:none!important;}
 .public-mode .sidebar-footer{margin-top:auto;}
 .public-rf-freqs{
@@ -2581,7 +2608,7 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
           <div class="card">
             <div class="card-head"><div class="card-title">Current Calls</div></div>
             <div class="card-body">
-              <div class="table-wrap">
+              <div class="table-wrap public-calls-wrap" id="pub-calls-wrap">
                 <table class="public-table">
                   <thead><tr>
                     <th>TS</th><th>Type</th><th>Speaker</th><th>Target</th><th>Duration</th>
@@ -2599,7 +2626,7 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
           </div>
           <div class="card-body">
             <div class="table-wrap">
-              <table class="public-table">
+              <table class="public-table public-lastheard-table">
                 <thead><tr>
                   <th>Time</th><th>Callsign</th><th>ISSI</th><th>Activity</th><th>Target</th>
                 </tr></thead>
@@ -9084,6 +9111,9 @@ function publicActivityBadge(activity){
 function publicTarget(e){
   if(!e||!e.dest)return '<span class="muted">—</span>';
   if(e.activity==='call_group')return '<code>TG '+e.dest+'</code>';
+  if(e.activity==='call_individual'&&e.dest_callsign){
+    return qrzCallsign(e.dest_callsign,e.dest_flag);
+  }
   return '<code>'+e.dest+'</code>';
 }
 function renderPublicTimeslots(calls){
@@ -9112,11 +9142,15 @@ function renderPublicTimeslots(calls){
     if(dur)dur.style.width=Math.min(100,((c.started_secs_ago||0)/120)*100)+'%';
   }
 }
-function renderPublicCalls(calls){
+function renderPublicCalls(calls,cell){
   const tb=document.getElementById('pub-calls-tbody');if(!tb)return;
+  const wrap=document.getElementById('pub-calls-wrap');
+  const carrierCount=cell&&Array.isArray(cell.carriers)&&cell.carriers.length>1?cell.carriers.length:1;
+  const rowCapacity=carrierCount>1?7:3;
+  if(wrap)wrap.style.setProperty('--public-call-rows',String(rowCapacity));
+
   const arr=[...(calls||[])].sort((a,b)=>(a.carrier_num-b.carrier_num)||(a.ts-b.ts));
-  if(!arr.length){tb.innerHTML='<tr><td colspan="5"><div class="empty-state"><div class="empty-msg">No active calls</div></div></td></tr>';return;}
-  tb.innerHTML=arr.map(c=>{
+  const rows=arr.map(c=>{
     const type=c.call_type==='group'
       ? '<span class="pill pill-info">Group</span>'
       : '<span class="pill pill-warn">'+(c.simplex?'Private simplex':'Private')+'</span>';
@@ -9127,17 +9161,24 @@ function renderPublicCalls(calls){
     );
     const speakerHtml=(speaker.call||'')+(speaker.call?' ':'')+speaker.issi;
     let target;
-    if(c.call_type==='group')target='<code>TG '+c.gssi+'</code>';
-    else {
+    if(c.call_type==='group'){
+      target='<code>TG '+c.gssi+'</code>';
+    }else{
       const speakerIsCaller=(c.speaker_issi||c.caller_issi)===c.caller_issi;
-      const peer=speakerIsCaller
-        ? publicIdentity(c.called_issi,c.called_callsign,c.called_flag)
-        : publicIdentity(c.caller_issi,c.caller_callsign,c.caller_flag);
-      target=(peer.call||'')+(peer.call?' ':'')+peer.issi;
+      const peerCs=speakerIsCaller?c.called_callsign:c.caller_callsign;
+      const peerFlag=speakerIsCaller?c.called_flag:c.caller_flag;
+      const peerIssi=speakerIsCaller?c.called_issi:c.caller_issi;
+      target=peerCs?qrzCallsign(peerCs,peerFlag):('<code>'+peerIssi+'</code>');
     }
     const ts='C'+c.carrier_num+' / TS'+c.ts;
     return '<tr><td><code>'+ts+'</code></td><td>'+type+'</td><td>'+speakerHtml+'</td><td>'+target+'</td><td><span class="num accent">'+formatDur(c.started_secs_ago||0)+'</span></td></tr>';
-  }).join('');
+  });
+
+  const placeholders=Math.max(0,rowCapacity-arr.length);
+  for(let i=0;i<placeholders;i++){
+    rows.push('<tr class="public-call-placeholder" aria-hidden="true"><td>&nbsp;</td><td></td><td></td><td></td><td></td></tr>');
+  }
+  tb.innerHTML=rows.join('');
 }
 function publicFreq(hz){
   const n=Number(hz||0);
@@ -9265,7 +9306,7 @@ async function pollPublic(){
     const pbc=document.getElementById('pub-brew-card');
     if(pbc){pbc.classList.remove(...STAT_STATES);pbc.classList.add(d.brew_online?'is-info':'is-danger');}
     renderPublicTimeslots(d.calls||[]);
-    renderPublicCalls(d.calls||[]);
+    renderPublicCalls(d.calls||[],d.cell||null);
     renderPublicLastHeard(d.last_heard||[]);
   }catch{
     markPublicStale();
