@@ -265,6 +265,10 @@ a.callsign:hover{
 .public-table .callsign{margin-left:0;}
 .public-table td,.public-table th{white-space:nowrap;}
 .public-table td:last-child,.public-table th:last-child{white-space:normal;}
+.public-mode .sidebar-nav{display:none!important;}
+.public-mode .sidebar-footer{margin-top:auto;}
+.public-rf-sub{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:2px;}
+.public-rf-sub span{white-space:nowrap;}
 @media(max-width:1050px){.public-dashboard-grid{grid-template-columns:1fr;}}
 
 .sidebar-nav{
@@ -2494,14 +2498,18 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
           <div class="stat-icon" data-icon="calls"></div>
         </div>
         <div class="stat-card" id="pub-rf-card">
-          <div class="stat-label">RF</div>
-          <div class="stat-value is-text" id="pub-rf">—</div>
-          <div class="stat-sub" id="pub-freq">—</div>
+          <div class="stat-label">RF · <span id="pub-rf-state">—</span></div>
+          <div class="stat-value is-text" id="pub-carrier">—</div>
+          <div class="stat-sub public-rf-sub">
+            <span id="pub-tx">TX / DL —</span>
+            <span id="pub-rx">RX / UL —</span>
+          </div>
           <div class="stat-icon" data-icon="rf"></div>
         </div>
         <div class="stat-card" id="pub-brew-card">
           <div class="stat-label">Network</div>
           <div class="stat-value is-text" id="pub-brew">—</div>
+          <div class="stat-sub" id="pub-netid">MCC — · MNC —</div>
           <div class="stat-sub" id="pub-ver">—</div>
           <div class="stat-icon" data-icon="network"></div>
         </div>
@@ -2549,7 +2557,7 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
               <div class="table-wrap">
                 <table class="public-table">
                   <thead><tr>
-                    <th>TS</th><th>Type</th><th>Caller</th><th>Target</th><th>Duration</th>
+                    <th>TS</th><th>Type</th><th>Speaker</th><th>Target</th><th>Duration</th>
                   </tr></thead>
                   <tbody id="pub-calls-tbody"></tbody>
                 </table>
@@ -2561,7 +2569,6 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
         <div class="card">
           <div class="card-head">
             <div class="card-title">RF Activity / Last Heard</div>
-            <div class="card-actions"><span class="muted">RadioID → QRZ</span></div>
           </div>
           <div class="card-body">
             <div class="table-wrap">
@@ -9022,13 +9029,16 @@ async function boot(){
 function enterPublicMode(){
   // Anonymous read-only mode: no WS and no privileged APIs. The public endpoint is polled,
   // Pi-Star-style, while all control/configuration surfaces remain behind Login.
+  document.body.classList.add('public-mode');
   document.querySelectorAll('.nav-item').forEach(n=>{ n.style.display='none'; });
+  const title=document.getElementById('topbar-title');if(title)title.textContent='Dashboard';
+  document.title='TETRA FlowStation — Dashboard';
   const lb=document.getElementById('login-btn'); if(lb) lb.style.display='inline-flex';
   const lo=document.getElementById('logout-btn'); if(lo) lo.style.display='none';
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   const pp=document.getElementById('page-public'); if(pp) pp.classList.add('active');
   pollPublic();
-  setInterval(pollPublic, 2000);
+  setInterval(pollPublic, 1000);
 }
 
 function publicIdentity(issi,cs,fl){
@@ -9083,18 +9093,53 @@ function renderPublicCalls(calls){
     const type=c.call_type==='group'
       ? '<span class="pill pill-info">Group</span>'
       : '<span class="pill pill-warn">'+(c.simplex?'Private simplex':'Private')+'</span>';
-    const caller=publicIdentity(c.caller_issi,c.caller_callsign,c.caller_flag);
-    const callerHtml=(caller.call||'')+(caller.call?' ':'')+caller.issi;
+    const speaker=publicIdentity(
+      c.speaker_issi||c.caller_issi,
+      c.speaker_callsign||c.caller_callsign,
+      c.speaker_flag||c.caller_flag
+    );
+    const speakerHtml=(speaker.call||'')+(speaker.call?' ':'')+speaker.issi;
     let target;
     if(c.call_type==='group')target='<code>TG '+c.gssi+'</code>';
     else {
-      const called=publicIdentity(c.called_issi,c.called_callsign,c.called_flag);
-      target=(called.call||'')+(called.call?' ':'')+called.issi;
+      const speakerIsCaller=(c.speaker_issi||c.caller_issi)===c.caller_issi;
+      const peer=speakerIsCaller
+        ? publicIdentity(c.called_issi,c.called_callsign,c.called_flag)
+        : publicIdentity(c.caller_issi,c.caller_callsign,c.caller_flag);
+      target=(peer.call||'')+(peer.call?' ':'')+peer.issi;
     }
     const ts='C'+c.carrier_num+' / TS'+c.ts;
-    return '<tr><td><code>'+ts+'</code></td><td>'+type+'</td><td>'+callerHtml+'</td><td>'+target+'</td><td><span class="num accent">'+formatDur(c.started_secs_ago||0)+'</span></td></tr>';
+    return '<tr><td><code>'+ts+'</code></td><td>'+type+'</td><td>'+speakerHtml+'</td><td>'+target+'</td><td><span class="num accent">'+formatDur(c.started_secs_ago||0)+'</span></td></tr>';
   }).join('');
 }
+function publicFreq(hz){
+  const n=Number(hz||0);
+  return n>0?(n/1e6).toFixed(4)+' MHz':'—';
+}
+function renderPublicCell(cell,rfActive){
+  const setT=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v;};
+  setT('pub-rf-state',rfActive?'Active':'Idle');
+  if(!cell){
+    setT('pub-carrier','—');setT('pub-tx','TX / DL —');setT('pub-rx','RX / UL —');
+    setT('pub-netid','MCC — · MNC —');
+    return;
+  }
+  const carriers=Array.isArray(cell.carriers)?cell.carriers:[];
+  const carrText=carriers.length
+    ? carriers.map(c=>'C'+c.carrier).join(' + ')
+    : (cell.main_carrier!=null?'C'+cell.main_carrier:'—');
+  setT('pub-carrier',carrText);
+  if(carriers.length<=1){
+    const c=carriers[0]||{};
+    setT('pub-tx','TX / DL '+publicFreq(c.tx_dl_hz));
+    setT('pub-rx','RX / UL '+publicFreq(c.rx_ul_hz));
+  }else{
+    setT('pub-tx','TX / DL '+carriers.map(c=>'C'+c.carrier+' '+publicFreq(c.tx_dl_hz)).join(' · '));
+    setT('pub-rx','RX / UL '+carriers.map(c=>'C'+c.carrier+' '+publicFreq(c.rx_ul_hz)).join(' · '));
+  }
+  setT('pub-netid','MCC '+(cell.mcc??'—')+' · MNC '+(cell.mnc??'—'));
+}
+
 function setPublicConnectionStatus(d){
   // Public mode intentionally has no WebSocket. A successful /api/public response itself proves
   // that the FlowStation dashboard process is alive, so mirror that as BS ONLINE instead of
@@ -9143,18 +9188,39 @@ function renderPublicLastHeard(entries){
       +'</tr>';
   }).join('');
 }
+let publicPollInFlight=false;
+let publicLastOk=0;
+function markPublicStale(){
+  if(!publicLastOk||Date.now()-publicLastOk<5000)return;
+  const connLed=document.getElementById('connLed');if(connLed)connLed.classList.remove('on');
+  const connText=document.getElementById('connText');
+  if(connText){connText.textContent='STALE';connText.style.color='var(--warn)';}
+  const bs=document.getElementById('chip-bs');
+  if(bs){
+    bs.className='pill pill-warn';
+    const lbl=bs.querySelector('[data-i18n="bs_label"]');if(lbl)lbl.textContent='BS STALE';
+  }
+}
 async function pollPublic(){
+  if(publicPollInFlight)return;
+  publicPollInFlight=true;
+  const ctl=new AbortController();
+  const timeout=setTimeout(()=>ctl.abort(),1800);
   try{
-    const r=await fetch('/api/public', {credentials:'same-origin'});
-    if(!r.ok)return;
+    const r=await fetch('/api/public', {
+      credentials:'same-origin',
+      cache:'no-store',
+      signal:ctl.signal
+    });
+    if(!r.ok)throw new Error('HTTP '+r.status);
     const d=await r.json();
+    publicLastOk=Date.now();
     const setT=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v;};
     setT('pub-ms',d.registered_ms??'—');
     setT('pub-calls',d.active_calls??0);
-    setT('pub-freq',d.center_freq_hz?(d.center_freq_hz/1e6).toFixed(4)+' MHz':'—');
-    setT('pub-rf',d.rf_active?'Active':'Idle');
     setT('pub-brew',d.brew_online?'Online':'Offline');
     setT('pub-ver',d.stack_version||'—');
+    renderPublicCell(d.cell||null,!!d.rf_active);
     setPublicConnectionStatus(d);
     const STAT_STATES=['is-ok','is-idle','is-info','is-warn','is-danger'];
     const rfc=document.getElementById('pub-rf-card');
@@ -9164,7 +9230,12 @@ async function pollPublic(){
     renderPublicTimeslots(d.calls||[]);
     renderPublicCalls(d.calls||[]);
     renderPublicLastHeard(d.last_heard||[]);
-  }catch{/* public dashboard stays on the last good snapshot */}
+  }catch{
+    markPublicStale();
+  }finally{
+    clearTimeout(timeout);
+    publicPollInFlight=false;
+  }
 }
 
 boot();
