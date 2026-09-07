@@ -252,6 +252,20 @@ body{
   font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:0.02em;
   vertical-align:middle;
 }
+a.callsign{ text-decoration:none; transition:background .15s ease,color .15s ease,box-shadow .15s ease; }
+a.callsign:hover{
+  color:var(--text);
+  background:color-mix(in srgb,var(--accent2) 20%,transparent);
+  box-shadow:0 0 0 1px color-mix(in srgb,var(--accent2) 30%,transparent);
+}
+.public-dashboard-grid{display:grid;grid-template-columns:minmax(300px,.85fr) minmax(480px,1.55fr);gap:14px;margin-bottom:14px;}
+.public-stack{display:flex;flex-direction:column;gap:14px;min-width:0;}
+.public-note{display:flex;align-items:center;gap:8px;color:var(--text2);font-size:12px;margin:-2px 0 12px;}
+.public-note .pill{flex-shrink:0;}
+.public-table .callsign{margin-left:0;}
+.public-table td,.public-table th{white-space:nowrap;}
+.public-table td:last-child,.public-table th:last-child{white-space:normal;}
+@media(max-width:1050px){.public-dashboard-grid{grid-template-columns:1fr;}}
 
 .sidebar-nav{
   flex:1;padding:8px 8px;overflow-y:auto;overflow-x:hidden;
@@ -2459,8 +2473,13 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
   <!-- Content -->
   <div id="content">
 
-    <!-- ── PUBLIC OVERVIEW (FH-FEAT-033) — shown only to anonymous visitors when public_overview is on ── -->
+    <!-- ── PUBLIC OVERVIEW — Pi-Star-inspired information density, FlowStation visual language ── -->
     <div class="page" id="page-public">
+      <div class="public-note">
+        <span class="pill pill-info">PUBLIC</span>
+        <span>Read-only RF activity. Log in for configuration and controls.</span>
+      </div>
+
       <div class="stat-grid">
         <div class="stat-card green">
           <div class="stat-label">Radios</div>
@@ -2487,13 +2506,72 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
           <div class="stat-icon" data-icon="network"></div>
         </div>
       </div>
-      <div class="card">
-        <div class="card-head"><div class="card-title">Cell Status</div></div>
-        <div class="card-body">
-          <div class="empty-state">
-            <span class="empty-ico" data-icon="login"></span>
-            <div class="empty-msg">Read-only public overview</div>
-            <div class="empty-sub">Log in for full access and controls.</div>
+
+      <div class="public-dashboard-grid">
+        <div class="public-stack">
+          <div class="card">
+            <div class="card-head">
+              <div class="card-title">RF Channel — Timeslots</div>
+            </div>
+            <div class="card-body">
+              <div class="ts-grid" id="pub-ts-grid">
+                <div class="ts-block mcch" id="pub-ts-block-1">
+                  <div class="ts-num">TS 1</div><div class="ts-led"></div>
+                  <div class="ts-wave"></div>
+                  <div class="ts-label">MCCH</div><div class="ts-sub">ACTIVE</div>
+                  <div class="ts-duration-bar"></div>
+                </div>
+                <div class="ts-block" id="pub-ts-block-2">
+                  <div class="ts-num">TS 2</div><div class="ts-timer"></div><div class="ts-led"></div>
+                  <div class="ts-wave"></div>
+                  <div class="ts-label">—</div><div class="ts-sub">Idle</div>
+                  <div class="ts-duration-bar"></div>
+                </div>
+                <div class="ts-block" id="pub-ts-block-3">
+                  <div class="ts-num">TS 3</div><div class="ts-timer"></div><div class="ts-led"></div>
+                  <div class="ts-wave"></div>
+                  <div class="ts-label">—</div><div class="ts-sub">Idle</div>
+                  <div class="ts-duration-bar"></div>
+                </div>
+                <div class="ts-block" id="pub-ts-block-4">
+                  <div class="ts-num">TS 4</div><div class="ts-timer"></div><div class="ts-led"></div>
+                  <div class="ts-wave"></div>
+                  <div class="ts-label">—</div><div class="ts-sub">Idle</div>
+                  <div class="ts-duration-bar"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><div class="card-title">Current Calls</div></div>
+            <div class="card-body">
+              <div class="table-wrap">
+                <table class="public-table">
+                  <thead><tr>
+                    <th>TS</th><th>Type</th><th>Caller</th><th>Target</th><th>Duration</th>
+                  </tr></thead>
+                  <tbody id="pub-calls-tbody"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div class="card-title">RF Activity / Last Heard</div>
+            <div class="card-actions"><span class="muted">RadioID → QRZ</span></div>
+          </div>
+          <div class="card-body">
+            <div class="table-wrap">
+              <table class="public-table">
+                <thead><tr>
+                  <th>Time</th><th>Callsign</th><th>ISSI</th><th>Activity</th><th>Target</th>
+                </tr></thead>
+                <tbody id="pub-lastheard-tbody"></tbody>
+              </table>
+            </div>
           </div>
         </div>
       </div>
@@ -5200,7 +5278,19 @@ let dgnaUi={selectedGssi:0,targetChecks:{},statusLog:[],lastByIssi:{}};
 let callsigns={};
 let _csInflight=false;
 // Render an ISSI with its RadioID callsign (and country flag, when known) appended.
-function idCell(issi){const c=callsigns[issi];if(!c||!c.cs)return `<code>${issi}</code>`;const fl=c.fl?c.fl+' ':'';return `<code>${issi}</code> <span class="callsign">${fl}${escHtml(c.cs)}</span>`;}
+function qrzCallsign(cs,fl){
+  if(!cs)return '';
+  const clean=String(cs).trim().toUpperCase();
+  if(!clean)return '';
+  const flag=fl?escHtml(fl)+' ':'';
+  const href='https://www.qrz.com/db/'+encodeURIComponent(clean);
+  return `<a class="callsign" href="${href}" target="_blank" rel="noopener noreferrer" title="Open ${escHtmlAttr(clean)} on QRZ.com">${flag}${escHtml(clean)}</a>`;
+}
+function idCell(issi){
+  const c=callsigns[issi];
+  if(!c||!c.cs)return `<code>${issi}</code>`;
+  return `<code>${issi}</code> ${qrzCallsign(c.cs,c.fl)}`;
+}
 // Resolve callsigns for every ISSI currently on screen we have not looked up yet. On-demand: the
 // server fetches unknowns from RadioID in the background and caches them locally; pending IDs are
 // omitted from the response and retried on the next tick. Found/absent results are cached here.
@@ -8930,35 +9020,118 @@ async function boot(){
   checkUpdate();
 }
 function enterPublicMode(){
-  // Anonymous read-only mode: hide every admin nav item + logout, reveal Login, show only the
-  // public overview page, and poll the narrow public snapshot. No WS, no privileged fetches.
+  // Anonymous read-only mode: no WS and no privileged APIs. The public endpoint is polled,
+  // Pi-Star-style, while all control/configuration surfaces remain behind Login.
   document.querySelectorAll('.nav-item').forEach(n=>{ n.style.display='none'; });
   const lb=document.getElementById('login-btn'); if(lb) lb.style.display='inline-flex';
   const lo=document.getElementById('logout-btn'); if(lo) lo.style.display='none';
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   const pp=document.getElementById('page-public'); if(pp) pp.classList.add('active');
   pollPublic();
-  setInterval(pollPublic, 3000);
+  setInterval(pollPublic, 2000);
+}
+
+function publicIdentity(issi,cs,fl){
+  const call=qrzCallsign(cs,fl);
+  return {call, issi: issi?('<code>'+issi+'</code>'):'<span class="muted">—</span>'};
+}
+function publicCallsignOnly(cs,fl){
+  return cs?qrzCallsign(cs,fl):'<span class="muted">—</span>';
+}
+function publicActivityBadge(activity){
+  if(activity==='call_group')return '<span class="pill pill-info">Group call</span>';
+  if(activity==='call_individual')return '<span class="pill pill-warn">Private call</span>';
+  if(activity==='sds')return '<span class="pill pill-info">SDS</span>';
+  return '<span class="pill pill-idle">'+escHtml(activity||'—')+'</span>';
+}
+function publicTarget(e){
+  if(!e||!e.dest)return '<span class="muted">—</span>';
+  if(e.activity==='call_group')return '<code>TG '+e.dest+'</code>';
+  return '<code>'+e.dest+'</code>';
+}
+function renderPublicTimeslots(calls){
+  const byTs={};
+  (calls||[]).forEach(c=>{
+    if(c.ts>=2&&c.ts<=4)byTs[c.ts]=c;
+    if(c.peer_ts>=2&&c.peer_ts<=4&&!byTs[c.peer_ts])byTs[c.peer_ts]=c;
+  });
+  for(let ts=1;ts<=4;ts++){
+    const b=document.getElementById('pub-ts-block-'+ts);if(!b)continue;
+    const label=b.querySelector('.ts-label'),sub=b.querySelector('.ts-sub'),timer=b.querySelector('.ts-timer'),dur=b.querySelector('.ts-duration-bar');
+    if(ts===1){
+      b.className='ts-block mcch';label.textContent='MCCH';sub.textContent='ACTIVE';if(timer)timer.textContent='';if(dur)dur.style.width='0%';continue;
+    }
+    const c=byTs[ts];
+    if(!c){
+      b.className='ts-block';label.textContent='—';sub.textContent='Idle';if(timer)timer.textContent='';if(dur)dur.style.width='0%';continue;
+    }
+    b.className='ts-block call';
+    if((c.priority||0)>=15)b.classList.add('emergency');
+    label.textContent=c.call_type==='group'?('GSSI '+c.gssi):'PRIVATE';
+    const spk=c.speaker_issi||c.caller_issi;
+    const cs=c.speaker_callsign||c.caller_callsign;
+    sub.textContent=cs?(spk+' · '+cs):('ISSI '+spk);
+    if(timer)timer.textContent=formatDur(c.started_secs_ago||0);
+    if(dur)dur.style.width=Math.min(100,((c.started_secs_ago||0)/120)*100)+'%';
+  }
+}
+function renderPublicCalls(calls){
+  const tb=document.getElementById('pub-calls-tbody');if(!tb)return;
+  const arr=[...(calls||[])].sort((a,b)=>(a.carrier_num-b.carrier_num)||(a.ts-b.ts));
+  if(!arr.length){tb.innerHTML='<tr><td colspan="5"><div class="empty-state"><div class="empty-msg">No active calls</div></div></td></tr>';return;}
+  tb.innerHTML=arr.map(c=>{
+    const type=c.call_type==='group'
+      ? '<span class="pill pill-info">Group</span>'
+      : '<span class="pill pill-warn">'+(c.simplex?'Private simplex':'Private')+'</span>';
+    const caller=publicIdentity(c.caller_issi,c.caller_callsign,c.caller_flag);
+    const callerHtml=(caller.call||'')+(caller.call?' ':'')+caller.issi;
+    let target;
+    if(c.call_type==='group')target='<code>TG '+c.gssi+'</code>';
+    else {
+      const called=publicIdentity(c.called_issi,c.called_callsign,c.called_flag);
+      target=(called.call||'')+(called.call?' ':'')+called.issi;
+    }
+    const ts='C'+c.carrier_num+' / TS'+c.ts;
+    return '<tr><td><code>'+ts+'</code></td><td>'+type+'</td><td>'+callerHtml+'</td><td>'+target+'</td><td><span class="num accent">'+formatDur(c.started_secs_ago||0)+'</span></td></tr>';
+  }).join('');
+}
+function renderPublicLastHeard(entries){
+  const tb=document.getElementById('pub-lastheard-tbody');if(!tb)return;
+  const arr=entries||[];
+  if(!arr.length){tb.innerHTML='<tr><td colspan="5"><div class="empty-state"><div class="empty-msg">No RF activity yet</div></div></td></tr>';return;}
+  tb.innerHTML=arr.map(e=>{
+    return '<tr>'
+      +'<td><span class="num">'+escHtml(e.ts||'—')+'</span></td>'
+      +'<td>'+publicCallsignOnly(e.callsign,e.flag)+'</td>'
+      +'<td><code>'+e.issi+'</code></td>'
+      +'<td>'+publicActivityBadge(e.activity)+'</td>'
+      +'<td>'+publicTarget(e)+'</td>'
+      +'</tr>';
+  }).join('');
 }
 async function pollPublic(){
   try{
     const r=await fetch('/api/public', {credentials:'same-origin'});
-    if(!r.ok) return;
+    if(!r.ok)return;
     const d=await r.json();
-    const setT=(id,v)=>{ const e=document.getElementById(id); if(e) e.textContent=v; };
-    setT('pub-ms', d.registered_ms ?? '—');
-    setT('pub-calls', (d.active_calls ?? 0) + (d.active_calls ? ' ('+d.group_calls+'G / '+d.individual_calls+'I)' : ''));
-    setT('pub-freq', d.center_freq_hz ? (d.center_freq_hz/1e6).toFixed(4)+' MHz' : '—');
-    setT('pub-rf', d.rf_active ? 'Active' : 'Idle');
-    setT('pub-brew', d.brew_online ? 'Online' : 'Offline');
-    setT('pub-ver', d.stack_version || '—');
+    const setT=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v;};
+    setT('pub-ms',d.registered_ms??'—');
+    setT('pub-calls',d.active_calls??0);
+    setT('pub-freq',d.center_freq_hz?(d.center_freq_hz/1e6).toFixed(4)+' MHz':'—');
+    setT('pub-rf',d.rf_active?'Active':'Idle');
+    setT('pub-brew',d.brew_online?'Online':'Offline');
+    setT('pub-ver',d.stack_version||'—');
     const STAT_STATES=['is-ok','is-idle','is-info','is-warn','is-danger'];
     const rfc=document.getElementById('pub-rf-card');
-    if(rfc){ rfc.classList.remove(...STAT_STATES); rfc.classList.add(d.rf_active?'is-ok':'is-idle'); }
+    if(rfc){rfc.classList.remove(...STAT_STATES);rfc.classList.add(d.rf_active?'is-ok':'is-idle');}
     const pbc=document.getElementById('pub-brew-card');
-    if(pbc){ pbc.classList.remove(...STAT_STATES); pbc.classList.add(d.brew_online?'is-info':'is-danger'); }
-  }catch{/* silent */}
+    if(pbc){pbc.classList.remove(...STAT_STATES);pbc.classList.add(d.brew_online?'is-info':'is-danger');}
+    renderPublicTimeslots(d.calls||[]);
+    renderPublicCalls(d.calls||[]);
+    renderPublicLastHeard(d.last_heard||[]);
+  }catch{/* public dashboard stays on the last good snapshot */}
 }
+
 boot();
 </script>
 </body>
