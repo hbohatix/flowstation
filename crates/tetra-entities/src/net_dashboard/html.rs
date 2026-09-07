@@ -9170,7 +9170,7 @@ function renderPublicCalls(calls,cell){
       const peerIssi=speakerIsCaller?c.called_issi:c.caller_issi;
       target=peerCs?qrzCallsign(peerCs,peerFlag):('<code>'+peerIssi+'</code>');
     }
-    const ts='C'+c.carrier_num+' / TS'+c.ts;
+    const ts=c.carrier_num+' / TS'+c.ts;
     return '<tr><td><code>'+ts+'</code></td><td>'+type+'</td><td>'+speakerHtml+'</td><td>'+target+'</td><td><span class="num accent">'+formatDur(c.started_secs_ago||0)+'</span></td></tr>';
   });
 
