@@ -282,7 +282,7 @@ a.callsign:hover{
 .public-calls-wrap{
   --public-call-rows:3;
   height:calc(33px + (var(--public-call-rows) * 34px));
-  overflow-y:auto;
+  overflow-y:hidden;
 }
 .public-call-placeholder td{
   height:34px;
@@ -2628,7 +2628,7 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
             <div class="table-wrap">
               <table class="public-table public-lastheard-table">
                 <thead><tr>
-                  <th>Time</th><th>Callsign</th><th>ISSI</th><th>Activity</th><th>Target</th>
+                  <th>Time</th><th>Callsign</th><th>ISSI</th><th>Activity</th><th>Target</th><th>Src</th>
                 </tr></thead>
                 <tbody id="pub-lastheard-tbody"></tbody>
               </table>
@@ -9255,7 +9255,7 @@ function setPublicConnectionStatus(d){
 function renderPublicLastHeard(entries){
   const tb=document.getElementById('pub-lastheard-tbody');if(!tb)return;
   const arr=entries||[];
-  if(!arr.length){tb.innerHTML='<tr><td colspan="5"><div class="empty-state"><div class="empty-msg">No RF activity yet</div></div></td></tr>';return;}
+  if(!arr.length){tb.innerHTML='<tr><td colspan="6"><div class="empty-state"><div class="empty-msg">No RF activity yet</div></div></td></tr>';return;}
   tb.innerHTML=arr.map(e=>{
     return '<tr>'
       +'<td><span class="num">'+escHtml(e.ts||'—')+'</span></td>'
@@ -9263,6 +9263,7 @@ function renderPublicLastHeard(entries){
       +'<td><code>'+e.issi+'</code></td>'
       +'<td>'+publicActivityBadge(e.activity)+'</td>'
       +'<td>'+publicTarget(e)+'</td>'
+      +'<td><span class="pill '+(e.source==='RF'?'pill-ok':'pill-info')+'">'+escHtml(e.source||'—')+'</span></td>'
       +'</tr>';
   }).join('');
 }
