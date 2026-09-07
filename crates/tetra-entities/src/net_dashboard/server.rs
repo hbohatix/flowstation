@@ -1920,7 +1920,7 @@ fn handle_connection(
                     || req_line.starts_with("GET /api/public?")
                     || req_line == "GET /api/public HTTP/1.1")
             {
-                serve_public_snapshot(inner, &state);
+                serve_public_snapshot(inner, &state, &radioid);
                 return;
             }
 
@@ -3979,17 +3979,98 @@ fn save_config_profile(config_path: &str, profile_name: &str, content: &str) -> 
     atomic_write(profile_path, &content).map_err(|e| format!("failed to write profile: {}", e))
 }
 
-/// GET /api/public — anonymous read-only overview (FH-FEAT-033). Projects ONLY non-sensitive,
-/// already-public scalars from the dashboard's own state — never SharedConfig/StackState, and never
-/// ISSIs/GSSIs, the whitelist, SDS contents or the log ring. The read lock is the dashboard's own
-/// RwLock (the same one the WS snapshot takes), held only long enough to copy a handful of counts.
-fn serve_public_snapshot(stream: TcpStream, state: &DashboardState) {
+/// Resolve only identities that are already present in the live dashboard state.
+/// Unknown IDs are queued through the existing bounded RadioID worker; anonymous clients
+/// cannot submit arbitrary lookup IDs through this path.
+fn public_identity(
+    radioid: &crate::net_dashboard::radioid::RadioIdCache,
+    issi: u32,
+) -> (Option<String>, String) {
+    use crate::net_dashboard::radioid::Lookup;
+    match radioid.get(issi) {
+        Lookup::Found(cs) => {
+            let flag = crate::net_dashboard::callsign::callsign_flag(&cs).unwrap_or_default();
+            (Some(cs), flag)
+        }
+        Lookup::NotFound | Lookup::Pending => (None, String::new()),
+    }
+}
+
+/// GET /api/public — anonymous read-only operator overview (FH-FEAT-033).
+///
+/// This endpoint is available only when `[dashboard] public_overview = true` AND dashboard
+/// authentication is configured. In that explicit opt-in mode it exposes the same type of
+/// on-air activity normally visible on a repeater dashboard: registered-radio count, active
+/// call/timeslot assignment and the rolling Last Heard list. It deliberately does NOT expose
+/// config contents, whitelist data, SDS message bodies, logs, control endpoints or WebSocket.
+///
+/// Callsigns are resolved only for ISSIs already present in live state; clients cannot turn this
+/// endpoint into an arbitrary RadioID lookup proxy.
+fn serve_public_snapshot(
+    stream: TcpStream,
+    state: &DashboardState,
+    radioid: &crate::net_dashboard::radioid::RadioIdCache,
+) {
     let body = match state.read() {
         Ok(s) => {
             let active_calls = s.calls.len();
             let group_calls = s.calls.values().filter(|c| c.is_group).count();
             let individual_calls = active_calls - group_calls;
             let center_freq_hz = s.last_tx_visual.as_ref().map(|v| v.center_freq_hz);
+
+            let calls = s
+                .calls
+                .values()
+                .map(|c| {
+                    let speaker_issi = c.speaker_issi.unwrap_or(c.caller_issi);
+                    let (caller_callsign, caller_flag) = public_identity(radioid, c.caller_issi);
+                    let (speaker_callsign, speaker_flag) = public_identity(radioid, speaker_issi);
+                    let (called_callsign, called_flag) = if !c.is_group && c.called_issi != 0 {
+                        public_identity(radioid, c.called_issi)
+                    } else {
+                        (None, String::new())
+                    };
+                    serde_json::json!({
+                        "call_id": c.call_id,
+                        "call_type": if c.is_group { "group" } else { "individual" },
+                        "gssi": c.gssi,
+                        "caller_issi": c.caller_issi,
+                        "caller_callsign": caller_callsign,
+                        "caller_flag": caller_flag,
+                        "called_issi": c.called_issi,
+                        "called_callsign": called_callsign,
+                        "called_flag": called_flag,
+                        "speaker_issi": speaker_issi,
+                        "speaker_callsign": speaker_callsign,
+                        "speaker_flag": speaker_flag,
+                        "started_secs_ago": c.started_at.elapsed().as_secs(),
+                        "simplex": c.simplex,
+                        "carrier_num": c.carrier_num,
+                        "ts": c.ts,
+                        "peer_carrier_num": c.peer_carrier_num,
+                        "peer_ts": c.peer_ts,
+                        "priority": c.priority,
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            let last_heard = s
+                .last_heard
+                .iter()
+                .take(crate::net_dashboard::state::LAST_HEARD_MAX)
+                .map(|e| {
+                    let (callsign, flag) = public_identity(radioid, e.issi);
+                    serde_json::json!({
+                        "ts": e.ts,
+                        "issi": e.issi,
+                        "callsign": callsign,
+                        "flag": flag,
+                        "activity": e.activity,
+                        "dest": e.dest,
+                    })
+                })
+                .collect::<Vec<_>>();
+
             serde_json::json!({
                 "registered_ms": s.ms_map.len(),
                 "active_calls": active_calls,
@@ -3999,6 +4080,8 @@ fn serve_public_snapshot(stream: TcpStream, state: &DashboardState) {
                 "rf_active": s.last_tx_visual.is_some(),
                 "brew_online": s.brew_online,
                 "stack_version": tetra_core::STACK_VERSION,
+                "calls": calls,
+                "last_heard": last_heard,
             })
             .to_string()
         }
