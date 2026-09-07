@@ -4061,11 +4061,11 @@ fn serve_public_snapshot(
                 .map(|e| {
                     let (callsign, flag) = public_identity(radioid, e.issi);
                     serde_json::json!({
-                        "ts": e.ts,
+                        "ts": e.ts.clone(),
                         "issi": e.issi,
                         "callsign": callsign,
                         "flag": flag,
-                        "activity": e.activity,
+                        "activity": e.activity.clone(),
                         "dest": e.dest,
                     })
                 })
