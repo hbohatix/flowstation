@@ -4079,6 +4079,7 @@ fn serve_public_snapshot(
                 "center_freq_hz": center_freq_hz,
                 "rf_active": s.last_tx_visual.is_some(),
                 "brew_online": s.brew_online,
+                "brew_version": s.brew_version,
                 "stack_version": tetra_core::STACK_VERSION,
                 "calls": calls,
                 "last_heard": last_heard,
