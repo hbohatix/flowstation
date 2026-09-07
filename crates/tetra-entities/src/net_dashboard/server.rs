@@ -4133,6 +4133,13 @@ fn serve_public_snapshot(
                 .take(crate::net_dashboard::state::LAST_HEARD_MAX)
                 .map(|e| {
                     let (callsign, flag) = public_identity(radioid, e.issi);
+                    // Only a private-call destination is another subscriber identity. Resolve it
+                    // for display in the public Last Heard table; group destinations remain TG IDs.
+                    let (dest_callsign, dest_flag) = if e.activity == "call_individual" && e.dest != 0 {
+                        public_identity(radioid, e.dest)
+                    } else {
+                        (None, String::new())
+                    };
                     serde_json::json!({
                         "ts": e.ts.clone(),
                         "issi": e.issi,
@@ -4140,6 +4147,8 @@ fn serve_public_snapshot(
                         "flag": flag,
                         "activity": e.activity.clone(),
                         "dest": e.dest,
+                        "dest_callsign": dest_callsign,
+                        "dest_flag": dest_flag,
                     })
                 })
                 .collect::<Vec<_>>();
