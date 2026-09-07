@@ -1180,27 +1180,45 @@ impl DashboardServer {
                     carrier_num,
                     ts,
                 } => {
-                    if let Some(c) = s.calls.get_mut(call_id) {
-                        c.speaker_issi = Some(*speaker_issi);
-                    }
-                    // Whoever is speaking has this TG/peer selected.
-                    if let Some(e) = s.ms_map.get_mut(speaker_issi) {
-                        e.selected_group = if *is_group { Some(*dest_addr) } else { None };
-                    }
-                    s.push_last_heard(*speaker_issi, if *is_group { "call_group" } else { "call_individual" }, *dest_addr);
-                    if let Ok(json) = serde_json::to_string(&serde_json::json!({
-                        "type":"speaker_changed",
-                        "call_id":call_id,
-                        "speaker_issi":speaker_issi,
-                        "carrier_num":carrier_num,
-                        "ts":ts,
-                        "last_heard":{
-                            "issi":speaker_issi,
-                            "activity":if *is_group { "call_group" } else { "call_individual" },
-                            "dest":dest_addr
+                    // GroupCallStarted already seeds speaker_issi with the originating ISSI.
+                    // CMCE may immediately emit CallSpeakerChanged for that same radio; treating
+                    // it as a new Last Heard event produced the duplicate rows seen for one PTT.
+                    let changed = s
+                        .calls
+                        .get_mut(call_id)
+                        .map(|c| {
+                            let changed = c.speaker_issi != Some(*speaker_issi);
+                            c.speaker_issi = Some(*speaker_issi);
+                            changed
+                        })
+                        .unwrap_or(false);
+
+                    if changed {
+                        // Whoever is speaking has this TG/peer selected.
+                        if let Some(e) = s.ms_map.get_mut(speaker_issi) {
+                            e.selected_group = if *is_group { Some(*dest_addr) } else { None };
                         }
-                    })) {
-                        msg = Some(json);
+                        s.push_last_heard(
+                            *speaker_issi,
+                            if *is_group { "call_group" } else { "call_individual" },
+                            *dest_addr,
+                        );
+                        let source = if s.ms_map.contains_key(speaker_issi) { "RF" } else { "Net" };
+                        if let Ok(json) = serde_json::to_string(&serde_json::json!({
+                            "type":"speaker_changed",
+                            "call_id":call_id,
+                            "speaker_issi":speaker_issi,
+                            "carrier_num":carrier_num,
+                            "ts":ts,
+                            "last_heard":{
+                                "issi":speaker_issi,
+                                "activity":if *is_group { "call_group" } else { "call_individual" },
+                                "dest":dest_addr,
+                                "source":source
+                            }
+                        })) {
+                            msg = Some(json);
+                        }
                     }
                 }
                 TelemetryEvent::IndividualCallStarted {
@@ -4147,6 +4165,7 @@ fn serve_public_snapshot(
                         "flag": flag,
                         "activity": e.activity.clone(),
                         "dest": e.dest,
+                        "source": e.source.clone(),
                         "dest_callsign": dest_callsign,
                         "dest_flag": dest_flag,
                     })
