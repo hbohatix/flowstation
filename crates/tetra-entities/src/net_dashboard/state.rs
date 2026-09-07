@@ -70,6 +70,9 @@ pub struct LastHeardEntry {
     pub issi: u32,        // source ISSI
     pub activity: String, // "call_group", "call_individual", "sds"
     pub dest: u32,        // destination GSSI or ISSI (0 if unknown)
+    /// Origin of the activity at the moment it was recorded: a locally registered MS (RF)
+    /// or a remote subscriber received through the network/backhaul (Net).
+    pub source: String,
 }
 
 /// SDS Log entry — one SDS message the BS sent or received locally. Persisted to disk
@@ -305,11 +308,15 @@ impl DashboardStateInner {
     }
 
     pub fn push_last_heard(&mut self, issi: u32, activity: &str, dest: u32) {
+        // Capture RF/Net now rather than deriving it later when rendering history. A radio may
+        // deregister after the transmission; its historical row must still remain RF.
+        let source = if self.ms_map.contains_key(&issi) { "RF" } else { "Net" };
         let entry = LastHeardEntry {
             ts: chrono::Local::now().format("%H:%M:%S").to_string(),
             issi,
             activity: activity.to_string(),
             dest,
+            source: source.to_string(),
         };
         if self.last_heard.len() >= LAST_HEARD_MAX {
             self.last_heard.pop_back();
