@@ -267,8 +267,30 @@ a.callsign:hover{
 .public-table td:last-child,.public-table th:last-child{white-space:normal;}
 .public-mode .sidebar-nav{display:none!important;}
 .public-mode .sidebar-footer{margin-top:auto;}
-.public-rf-sub{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:2px;}
-.public-rf-sub span{white-space:nowrap;}
+.public-rf-freqs{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:14px;
+  margin-top:2px;
+}
+.public-rf-freq{min-width:0;}
+.public-rf-freq-label{
+  color:var(--text3);
+  font-family:var(--mono);
+  font-size:10px;
+  font-weight:700;
+  letter-spacing:.08em;
+  margin-bottom:2px;
+}
+.public-rf-freq-value{
+  color:var(--accent);
+  font-family:var(--mono);
+  font-size:18px;
+  font-weight:700;
+  line-height:1.2;
+  white-space:nowrap;
+}
+.public-rf-meta{margin-top:8px;white-space:normal;}
 @media(max-width:1050px){.public-dashboard-grid{grid-template-columns:1fr;}}
 
 .sidebar-nav{
@@ -2499,17 +2521,22 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
         </div>
         <div class="stat-card" id="pub-rf-card">
           <div class="stat-label">RF · <span id="pub-rf-state">—</span></div>
-          <div class="stat-value is-text" id="pub-carrier">—</div>
-          <div class="stat-sub public-rf-sub">
-            <span id="pub-tx">TX / DL —</span>
-            <span id="pub-rx">RX / UL —</span>
+          <div class="public-rf-freqs">
+            <div class="public-rf-freq">
+              <div class="public-rf-freq-label">DL</div>
+              <div class="public-rf-freq-value" id="pub-dl">—</div>
+            </div>
+            <div class="public-rf-freq">
+              <div class="public-rf-freq-label">UL</div>
+              <div class="public-rf-freq-value" id="pub-ul">—</div>
+            </div>
           </div>
+          <div class="stat-sub public-rf-meta" id="pub-rf-meta">Carrier: — · MCC: — · MNC: —</div>
           <div class="stat-icon" data-icon="rf"></div>
         </div>
         <div class="stat-card" id="pub-brew-card">
           <div class="stat-label">Network</div>
           <div class="stat-value is-text" id="pub-brew">—</div>
-          <div class="stat-sub" id="pub-netid">MCC — · MNC —</div>
           <div class="stat-sub" id="pub-ver">—</div>
           <div class="stat-icon" data-icon="network"></div>
         </div>
@@ -9120,24 +9147,34 @@ function renderPublicCell(cell,rfActive){
   const setT=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v;};
   setT('pub-rf-state',rfActive?'Active':'Idle');
   if(!cell){
-    setT('pub-carrier','—');setT('pub-tx','TX / DL —');setT('pub-rx','RX / UL —');
-    setT('pub-netid','MCC — · MNC —');
+    setT('pub-dl','—');
+    setT('pub-ul','—');
+    setT('pub-rf-meta','Carrier: — · MCC: — · MNC: —');
     return;
   }
+
   const carriers=Array.isArray(cell.carriers)?cell.carriers:[];
-  const carrText=carriers.length
-    ? carriers.map(c=>'C'+c.carrier).join(' + ')
-    : (cell.main_carrier!=null?'C'+cell.main_carrier:'—');
-  setT('pub-carrier',carrText);
+  const activeCarriers=carriers.length
+    ? carriers.map(c=>c.carrier)
+    : (cell.main_carrier!=null?[cell.main_carrier]:[]);
+
+  const carrierText=activeCarriers.length?activeCarriers.join(' + '):'—';
+
   if(carriers.length<=1){
     const c=carriers[0]||{};
-    setT('pub-tx','TX / DL '+publicFreq(c.tx_dl_hz));
-    setT('pub-rx','RX / UL '+publicFreq(c.rx_ul_hz));
+    setT('pub-dl',publicFreq(c.tx_dl_hz));
+    setT('pub-ul',publicFreq(c.rx_ul_hz));
   }else{
-    setT('pub-tx','TX / DL '+carriers.map(c=>'C'+c.carrier+' '+publicFreq(c.tx_dl_hz)).join(' · '));
-    setT('pub-rx','RX / UL '+carriers.map(c=>'C'+c.carrier+' '+publicFreq(c.rx_ul_hz)).join(' · '));
+    setT('pub-dl',carriers.map(c=>publicFreq(c.tx_dl_hz)).join(' · '));
+    setT('pub-ul',carriers.map(c=>publicFreq(c.rx_ul_hz)).join(' · '));
   }
-  setT('pub-netid','MCC '+(cell.mcc??'—')+' · MNC '+(cell.mnc??'—'));
+
+  setT(
+    'pub-rf-meta',
+    'Carrier: '+carrierText+
+    ' · MCC: '+(cell.mcc??'—')+
+    ' · MNC: '+(cell.mnc??'—')
+  );
 }
 
 function setPublicConnectionStatus(d){
