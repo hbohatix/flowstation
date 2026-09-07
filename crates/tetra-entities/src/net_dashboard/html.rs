@@ -265,27 +265,23 @@ a.callsign:hover{
 .public-table .callsign{margin-left:0;}
 .public-table td,.public-table th{white-space:nowrap;}
 .public-table td:last-child,.public-table th:last-child{white-space:normal;}
-.public-lastheard-table th:nth-child(1),
-.public-lastheard-table td:nth-child(1),
-.public-lastheard-table th:nth-child(2),
-.public-lastheard-table td:nth-child(2),
-.public-lastheard-table th:nth-child(3),
-.public-lastheard-table td:nth-child(3),
-.public-lastheard-table th:nth-child(4),
-.public-lastheard-table td:nth-child(4){
+.public-lastheard-table th:nth-child(-n+6),
+.public-lastheard-table td:nth-child(-n+6){
   width:1%;
 }
 .public-lastheard-table th:nth-child(2),
 .public-lastheard-table td:nth-child(2){padding-right:6px;}
 .public-lastheard-table th:nth-child(3),
 .public-lastheard-table td:nth-child(3){padding-left:6px;}
-.public-calls-wrap{
-  --public-call-rows:3;
-  height:calc(33px + (var(--public-call-rows) * 34px));
-  overflow-y:hidden;
+.public-lastheard-table th.public-table-fill,
+.public-lastheard-table td.public-table-fill{
+  width:auto;
+  padding:0;
 }
+.public-calls-wrap{overflow:visible;}
+.public-calls-wrap tbody tr{height:36px;}
 .public-call-placeholder td{
-  height:34px;
+  height:36px;
   padding-top:0;
   padding-bottom:0;
   color:transparent;
@@ -2628,7 +2624,7 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
             <div class="table-wrap">
               <table class="public-table public-lastheard-table">
                 <thead><tr>
-                  <th>Time</th><th>Callsign</th><th>ISSI</th><th>Activity</th><th>Target</th><th>Src</th>
+                  <th>Time</th><th>Callsign</th><th>ISSI</th><th>Activity</th><th>Target</th><th>Src</th><th class="public-table-fill"></th>
                 </tr></thead>
                 <tbody id="pub-lastheard-tbody"></tbody>
               </table>
@@ -9147,7 +9143,7 @@ function renderPublicCalls(calls,cell){
   const wrap=document.getElementById('pub-calls-wrap');
   const carrierCount=cell&&Array.isArray(cell.carriers)&&cell.carriers.length>1?cell.carriers.length:1;
   const rowCapacity=carrierCount>1?7:3;
-  if(wrap)wrap.style.setProperty('--public-call-rows',String(rowCapacity));
+  void wrap; // wrapper kept for DOM compatibility; row count itself fixes the height
 
   const arr=[...(calls||[])].sort((a,b)=>(a.carrier_num-b.carrier_num)||(a.ts-b.ts));
   const rows=arr.map(c=>{
@@ -9255,7 +9251,7 @@ function setPublicConnectionStatus(d){
 function renderPublicLastHeard(entries){
   const tb=document.getElementById('pub-lastheard-tbody');if(!tb)return;
   const arr=entries||[];
-  if(!arr.length){tb.innerHTML='<tr><td colspan="6"><div class="empty-state"><div class="empty-msg">No RF activity yet</div></div></td></tr>';return;}
+  if(!arr.length){tb.innerHTML='<tr><td colspan="7"><div class="empty-state"><div class="empty-msg">No RF activity yet</div></div></td></tr>';return;}
   tb.innerHTML=arr.map(e=>{
     return '<tr>'
       +'<td><span class="num">'+escHtml(e.ts||'—')+'</span></td>'
@@ -9264,6 +9260,7 @@ function renderPublicLastHeard(entries){
       +'<td>'+publicActivityBadge(e.activity)+'</td>'
       +'<td>'+publicTarget(e)+'</td>'
       +'<td><span class="pill '+(e.source==='RF'?'pill-ok':'pill-info')+'">'+escHtml(e.source||'—')+'</span></td>'
+      +'<td class="public-table-fill"></td>'
       +'</tr>';
   }).join('');
 }
