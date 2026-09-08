@@ -81,6 +81,28 @@ fn ssi_pair_is_valid(what: &str, source_ssi: u32, dest_ssi: u32) -> bool {
     true
 }
 
+/// Build an SDS-TL simple-text Type-4 payload.
+///
+/// `ControlCommand::SendSds` historically carried bare text bytes and CMCE supplied the
+/// ISO-8859-1 coding-scheme octet. The dashboard can also carry an explicit leading coding
+/// scheme (0x01..=0x03), notably 0x02 for UTF-16BE. Consume that octet as metadata rather than
+/// appending it as the first character of the message.
+///
+/// Without this normalization a dashboard ASCII message arrived on Motorola terminals as:
+///   82 04 MR 01 01 <text...>
+/// where the second 0x01 was rendered as a small black/blank control glyph before the text.
+fn wrap_sds_tl_text_payload(mr: u8, payload: &[u8]) -> Vec<u8> {
+    let (coding_scheme, text_payload) = match payload.split_first() {
+        Some((&scheme @ 0x01..=0x03, rest)) => (scheme, rest),
+        _ => (0x01, payload),
+    };
+
+    let mut wrapped = Vec::with_capacity(4 + text_payload.len());
+    wrapped.extend_from_slice(&[0x82, 0x04, mr, coding_scheme]);
+    wrapped.extend_from_slice(text_payload);
+    wrapped
+}
+
 /// SDS-TL delivery-report "delivery status" octet signalling a negative outcome (could not be
 /// delivered), sent to the originator when we give up on a deferred SDS. NOTE: confirm on-air that
 /// the field terminals (Motorola MXP600/MTP6750) render this as "not delivered" — it is
@@ -567,12 +589,15 @@ impl SdsBsSubentity {
             return false;
         }
 
-        // SDS-TL Simple Text Message — format verificat din tetraflow-sds-bot:
+        // SDS-TL Simple Text Message:
         //   Byte 0: 0x82  — Protocol Identifier (SDS-TL text messaging)
-        //   Byte 1: 0x04  — Message Type (Simple Text, cu TL-ACK request)
-        //   Byte 2: MR    — Message Reference (1..255, incrementat)
-        //   Byte 3: 0x01  — Encoding (ISO-8859-1 / ASCII)
+        //   Byte 1: 0x04  — Message Type (Simple Text, TL-ACK request)
+        //   Byte 2: MR    — Message Reference (1..255, incremented)
+        //   Byte 3: coding scheme (0x01 Latin / 0x02 UTF-16BE / supported explicit scheme)
         //   Bytes 4+: text payload
+        //
+        // SendSds accepts both legacy bare-text payloads and dashboard payloads prefixed with a
+        // coding-scheme octet. The wrapper consumes that prefix instead of duplicating it.
         static SDS_MR: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(1);
         let mr = {
             let v = SDS_MR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -583,11 +608,7 @@ impl SdsBsSubentity {
                 v
             }
         };
-        let wrapped_payload: Vec<u8> = {
-            let mut v = vec![0x82u8, 0x04u8, mr, 0x01u8];
-            v.extend_from_slice(&payload);
-            v
-        };
+        let wrapped_payload = wrap_sds_tl_text_payload(mr, &payload);
         // The SDS-TL Type-4 length field is 11 bits (length in bits), so it can encode at most
         // 2047 bits = 255 bytes (INCLUDING the 4-byte SDS-TL header). A wrapped payload larger than
         // that would overflow the 11-bit field and trip write_bits' range assertion in
@@ -1383,9 +1404,10 @@ impl SdsBsSubentity {
                 v
             }
         };
-        let mut payload = vec![0x82u8, 0x04u8, mr, 0x01u8];
-        // Keep printable ASCII only (the encoding byte declares ISO-8859-1/ASCII).
-        payload.extend(text.bytes().filter(|&b| b == b'\t' || (0x20..=0x7E).contains(&b)));
+        // Keep printable ASCII only. This path uses the legacy bare-text form, so the shared
+        // wrapper supplies coding scheme 0x01 exactly once.
+        let text_payload: Vec<u8> = text.bytes().filter(|&b| b == b'\t' || (0x20..=0x7E).contains(&b)).collect();
+        let payload = wrap_sds_tl_text_payload(mr, &text_payload);
         let len_bits = (payload.len() * 8) as u16;
         // Deliver the reply on the MCCH unconditionally: this is a response to a U-STATUS the
         // destination radio just sent us via random access on the MCCH, so it is provably
@@ -1520,5 +1542,31 @@ impl SdsBsSubentity {
                 tracing::warn!("SDS-CMD: unknown action '{}' for status={}, ignoring", other, status_code);
             }
         }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::wrap_sds_tl_text_payload;
+
+    #[test]
+    fn dashboard_latin_coding_scheme_is_not_rendered_as_text() {
+        let wrapped = wrap_sds_tl_text_payload(0x2A, &[0x01, b'T', b'E', b'S', b'T']);
+        assert_eq!(wrapped, vec![0x82, 0x04, 0x2A, 0x01, b'T', b'E', b'S', b'T']);
+        assert_ne!(wrapped.get(4), Some(&0x01), "coding scheme must not leak into message text");
+    }
+
+    #[test]
+    fn dashboard_utf16_coding_scheme_is_preserved_once() {
+        // "Ż" in UTF-16BE = U+017B -> 01 7B. The leading 0x02 is metadata, not text.
+        let wrapped = wrap_sds_tl_text_payload(7, &[0x02, 0x01, 0x7B]);
+        assert_eq!(wrapped, vec![0x82, 0x04, 7, 0x02, 0x01, 0x7B]);
+    }
+
+    #[test]
+    fn legacy_bare_text_defaults_to_latin() {
+        let wrapped = wrap_sds_tl_text_payload(9, b"HELLO");
+        assert_eq!(wrapped, vec![0x82, 0x04, 9, 0x01, b'H', b'E', b'L', b'L', b'O']);
     }
 }
