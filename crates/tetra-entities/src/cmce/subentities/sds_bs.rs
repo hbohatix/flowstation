@@ -250,6 +250,21 @@ impl SdsBsSubentity {
     /// payloads (status/reports/binary) log with empty text and the raw protocol-id byte.
     fn log_sds(&self, direction: &str, source_issi: u32, dest_issi: u32, is_group: bool, data: &SdsUserData) {
         let protocol_id = data.to_arr().first().copied().unwrap_or(0);
+
+        // Decode inbound TETRA LIP before the human-readable SDS log strips binary payloads.
+        // Position telemetry is deliberately independent of GeoAlarm: the dashboard map and
+        // external telemetry consumers must still receive coordinates when geofencing is off.
+        if direction == "rx" && protocol_id == 0x0A {
+            if let Some(pos) = crate::net_location::decode_tetra_lip_position(data) {
+                self.emit(TelemetryEvent::MsPosition {
+                    issi: source_issi,
+                    lat: pos.lat,
+                    lon: pos.lon,
+                    speed_kmh: pos.speed_kmh,
+                });
+            }
+        }
+
         self.emit(TelemetryEvent::SdsLog {
             direction: direction.to_string(),
             source_issi,
