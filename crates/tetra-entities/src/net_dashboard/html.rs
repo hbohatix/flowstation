@@ -278,7 +278,7 @@ a.callsign:hover{
 .public-lastheard-table th:nth-child(1),
 .public-lastheard-table td:nth-child(1){width:12%;}
 .public-lastheard-table th:nth-child(2),
-.public-lastheard-table td:nth-child(2){width:14%;}
+.public-lastheard-table td:nth-child(2){width:15%;}
 .public-lastheard-table th:nth-child(3),
 .public-lastheard-table td:nth-child(3){width:14%;}
 .public-lastheard-table th:nth-child(4),
@@ -286,8 +286,11 @@ a.callsign:hover{
 .public-lastheard-table th:nth-child(5),
 .public-lastheard-table td:nth-child(5){width:20%;}
 .public-lastheard-table th:nth-child(6),
-.public-lastheard-table td:nth-child(6){width:20%;}
+.public-lastheard-table td:nth-child(6){width:14%;}
 .public-calls-wrap{overflow:visible;}
+.public-calls-wrap table{table-layout:fixed;}
+.public-calls-wrap th,
+.public-calls-wrap td{text-align:center;}
 .public-calls-wrap tbody tr{height:36px;}
 .public-call-placeholder td{
   height:36px;
@@ -9159,12 +9162,12 @@ function renderPublicCalls(calls,cell){
     const type=c.call_type==='group'
       ? '<span class="pill pill-info">Group</span>'
       : '<span class="pill pill-warn">'+(c.simplex?'Private simplex':'Private')+'</span>';
-    const speaker=publicIdentity(
-      c.speaker_issi||c.caller_issi,
-      c.speaker_callsign||c.caller_callsign,
-      c.speaker_flag||c.caller_flag
-    );
-    const speakerHtml=(speaker.call||'')+(speaker.call?' ':'')+speaker.issi;
+    const speakerIssi=c.speaker_issi||c.caller_issi;
+    const speakerCs=c.speaker_callsign||c.caller_callsign;
+    const speakerFlag=c.speaker_flag||c.caller_flag;
+    const speakerHtml=speakerCs
+      ? qrzCallsign(speakerCs,speakerFlag)
+      : '<code>'+speakerIssi+'</code>';
     let target;
     if(c.call_type==='group'){
       target='<code>TG '+c.gssi+'</code>';
