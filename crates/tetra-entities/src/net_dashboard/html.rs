@@ -5235,7 +5235,7 @@ function renderRadioMap(){
       color:col,
       weight:2,
       fillColor:col,
-      fillOpacity:r.online?.78:.38
+      fillOpacity:r.online ? .78 : .38
     }).addTo(radioMap);
     marker.bindTooltip(escHtml(mapDisplayName(r)),{direction:'top',offset:[0,-6]});
     marker.bindPopup(mapPopupHtml(r),{maxWidth:320});
