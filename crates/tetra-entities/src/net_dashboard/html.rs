@@ -364,6 +364,9 @@ a.callsign:hover{
 .map-popup-actions button:hover{background:#e8edf4;}
 .leaflet-container{font-family:var(--sans);}
 .leaflet-control-attribution{font-size:9px!important;}
+#radio-map.map-dark .leaflet-tile-pane{
+  filter:brightness(.68) invert(1) contrast(1.28) hue-rotate(180deg) saturate(.72);
+}
 #radio-map.map-dark .leaflet-bar a{
   background:#17202c;color:#dbe7f5;border-bottom-color:#334155;
 }
@@ -5207,24 +5210,16 @@ function applyRadioMapTiles(){
   if(mapEl)mapEl.classList.toggle('map-dark',radioMapDarkEnabled());
   if(!radioMap||!window.L)return;
 
-  if(radioMapTileLayer){
-    radioMap.removeLayer(radioMapTileLayer);
-    radioMapTileLayer=null;
-  }
-  if(radioMapDarkEnabled()){
-    // CARTO Dark Matter renders OpenStreetMap data in a native dark palette.
-    radioMapTileLayer=L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
-      subdomains:'abcd',
-      maxZoom:20,
-      attribution:'&copy; OpenStreetMap contributors &copy; CARTO'
-    }).addTo(radioMap);
-  }else{
+  // Always use the standard OpenStreetMap raster tiles. Dark mode is applied only
+  // to Leaflet's tile pane with CSS, so markers/popups keep their normal colours
+  // and the map needs no third-party API key.
+  if(!radioMapTileLayer){
     radioMapTileLayer=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
       maxZoom:19,
       attribution:'&copy; OpenStreetMap contributors'
     }).addTo(radioMap);
+    radioMapTileLayer.bringToBack();
   }
-  radioMapTileLayer.bringToBack();
 }
 
 function initRadioMap(){
