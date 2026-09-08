@@ -6205,7 +6205,7 @@ function renderCalls(){
       : '';
     let to;
     if(c.call_type==='group'){
-      to=`<code>TG ${c.gssi}</code>`;
+      to=`<code>GSSI ${c.gssi}</code>`;
     }else{
       const targetCs=callsigns[c.called_issi];
       const targetIdentity=targetCs&&targetCs.cs
@@ -9127,7 +9127,7 @@ function publicActivityBadge(activity){
 }
 function publicTarget(e){
   if(!e||!e.dest)return '<span class="muted">—</span>';
-  if(e.activity==='call_group')return '<code>TG '+e.dest+'</code>';
+  if(e.activity==='call_group')return '<code>GSSI '+e.dest+'</code>';
   if(e.activity==='call_individual'&&e.dest_callsign){
     return qrzCallsign(e.dest_callsign,e.dest_flag);
   }
@@ -9179,7 +9179,7 @@ function renderPublicCalls(calls,cell){
       : '<code>'+speakerIssi+'</code>';
     let target;
     if(c.call_type==='group'){
-      target='<code>TG '+c.gssi+'</code>';
+      target='<code>GSSI '+c.gssi+'</code>';
     }else{
       const speakerIsCaller=(c.speaker_issi||c.caller_issi)===c.caller_issi;
       const peerCs=speakerIsCaller?c.called_callsign:c.caller_callsign;
