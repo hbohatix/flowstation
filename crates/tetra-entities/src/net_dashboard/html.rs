@@ -258,26 +258,35 @@ a.callsign:hover{
   background:color-mix(in srgb,var(--accent2) 20%,transparent);
   box-shadow:0 0 0 1px color-mix(in srgb,var(--accent2) 30%,transparent);
 }
-.public-dashboard-grid{display:grid;grid-template-columns:minmax(300px,.85fr) minmax(480px,1.55fr);gap:14px;margin-bottom:14px;}
+.public-dashboard-grid{display:grid;grid-template-columns:minmax(360px,.68fr) minmax(680px,1.72fr);gap:14px;margin-bottom:14px;}
 .public-stack{display:flex;flex-direction:column;gap:14px;min-width:0;}
 .public-note{display:flex;align-items:center;gap:8px;color:var(--text2);font-size:12px;margin:-2px 0 12px;}
 .public-note .pill{flex-shrink:0;}
 .public-table .callsign{margin-left:0;}
 .public-table td,.public-table th{white-space:nowrap;}
 .public-table td:last-child,.public-table th:last-child{white-space:normal;}
-.public-lastheard-table th:nth-child(-n+6),
-.public-lastheard-table td:nth-child(-n+6){
-  width:1%;
+.public-lastheard-table{
+  table-layout:fixed;
 }
+.public-lastheard-table th,
+.public-lastheard-table td{
+  padding-left:12px;
+  padding-right:12px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.public-lastheard-table th:nth-child(1),
+.public-lastheard-table td:nth-child(1){width:12%;}
 .public-lastheard-table th:nth-child(2),
-.public-lastheard-table td:nth-child(2){padding-right:6px;}
+.public-lastheard-table td:nth-child(2){width:14%;}
 .public-lastheard-table th:nth-child(3),
-.public-lastheard-table td:nth-child(3){padding-left:6px;}
-.public-lastheard-table th.public-table-fill,
-.public-lastheard-table td.public-table-fill{
-  width:auto;
-  padding:0;
-}
+.public-lastheard-table td:nth-child(3){width:14%;}
+.public-lastheard-table th:nth-child(4),
+.public-lastheard-table td:nth-child(4){width:20%;}
+.public-lastheard-table th:nth-child(5),
+.public-lastheard-table td:nth-child(5){width:20%;}
+.public-lastheard-table th:nth-child(6),
+.public-lastheard-table td:nth-child(6){width:20%;}
 .public-calls-wrap{overflow:visible;}
 .public-calls-wrap tbody tr{height:36px;}
 .public-call-placeholder td{
@@ -2624,7 +2633,7 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
             <div class="table-wrap">
               <table class="public-table public-lastheard-table">
                 <thead><tr>
-                  <th>Time</th><th>Callsign</th><th>ISSI</th><th>Activity</th><th>Target</th><th>Src</th><th class="public-table-fill"></th>
+                  <th>Time</th><th>Callsign</th><th>ISSI</th><th>Activity</th><th>Target</th><th>Src</th>
                 </tr></thead>
                 <tbody id="pub-lastheard-tbody"></tbody>
               </table>
@@ -9251,7 +9260,7 @@ function setPublicConnectionStatus(d){
 function renderPublicLastHeard(entries){
   const tb=document.getElementById('pub-lastheard-tbody');if(!tb)return;
   const arr=entries||[];
-  if(!arr.length){tb.innerHTML='<tr><td colspan="7"><div class="empty-state"><div class="empty-msg">No RF activity yet</div></div></td></tr>';return;}
+  if(!arr.length){tb.innerHTML='<tr><td colspan="6"><div class="empty-state"><div class="empty-msg">No RF activity yet</div></div></td></tr>';return;}
   tb.innerHTML=arr.map(e=>{
     return '<tr>'
       +'<td><span class="num">'+escHtml(e.ts||'—')+'</span></td>'
@@ -9260,7 +9269,6 @@ function renderPublicLastHeard(entries){
       +'<td>'+publicActivityBadge(e.activity)+'</td>'
       +'<td>'+publicTarget(e)+'</td>'
       +'<td><span class="pill '+(e.source==='RF'?'pill-ok':'pill-info')+'">'+escHtml(e.source||'—')+'</span></td>'
-      +'<td class="public-table-fill"></td>'
       +'</tr>';
   }).join('');
 }
