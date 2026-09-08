@@ -93,7 +93,7 @@ fn ssi_pair_is_valid(what: &str, source_ssi: u32, dest_ssi: u32) -> bool {
 /// where the second 0x01 was rendered as a small black/blank control glyph before the text.
 fn wrap_sds_tl_text_payload(mr: u8, payload: &[u8]) -> Vec<u8> {
     let (coding_scheme, text_payload) = match payload.split_first() {
-        Some((&scheme @ 0x01..=0x03, rest)) => (scheme, rest),
+        Some((&scheme, rest)) if (0x01..=0x03).contains(&scheme) => (scheme, rest),
         _ => (0x01, payload),
     };
 
