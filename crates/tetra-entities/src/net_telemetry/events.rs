@@ -53,15 +53,6 @@ pub enum TelemetryEvent {
     MsGroupDetach { issi: u32, gssis: Vec<u32> },
     /// RSSI measurement for a known MS (dBFS)
     MsRssi { issi: u32, rssi_dbfs: f32 },
-    /// Decoded TETRA Location Information Protocol position from an inbound SDS.
-    /// The event is independent of GeoAlarm so maps/telemetry can consume positions even when
-    /// geofencing is disabled.
-    MsPosition {
-        issi: u32,
-        lat: f64,
-        lon: f64,
-        speed_kmh: Option<f32>,
-    },
     /// Group call started. `priority` is the ETSI call priority (0..=15) from the originating
     /// U-SETUP / network call start; 15 denotes an emergency call (`priority` appended last so
     /// existing leading fields stay wire-stable for the bitcode codec).
@@ -232,6 +223,16 @@ pub enum TelemetryEvent {
         text: String,
         priority: Option<u8>,
         paths: Vec<String>,
+    },
+    /// Decoded TETRA Location Information Protocol position from an inbound SDS.
+    /// Appended last so all pre-existing bitcode enum discriminants remain wire-stable.
+    /// The event is independent of GeoAlarm so maps/telemetry can consume positions even when
+    /// geofencing is disabled.
+    MsPosition {
+        issi: u32,
+        lat: f64,
+        lon: f64,
+        speed_kmh: Option<f32>,
     },
 }
 
