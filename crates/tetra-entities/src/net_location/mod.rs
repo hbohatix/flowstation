@@ -45,13 +45,13 @@ impl<'a> BitReader<'a> {
         Some(value)
     }
 
-    fn skip(&mut self, bits: usize) -> bool {
+    fn skip(&mut self, bits: usize) -> Option<()> {
         match self.pos.checked_add(bits) {
             Some(next) if next <= self.bit_len => {
                 self.pos = next;
-                true
+                Some(())
             }
-            _ => false,
+            _ => None,
         }
     }
 }
