@@ -573,20 +573,13 @@ fn main() {
                                     TelemetryEvent::MsRssi { .. } => health_registry().note_radio_activity(),
                                     _ => {}
                                 }
-                                // Feed decoded TETRA LIP positions (SDS protocol-id 10, inbound from
-                                // a radio) to the GeoAlarm worker so it can geofence them.
+                                // GeoAlarm consumes the same decoded position event as the
+                                // dashboard map. This keeps geofencing independent from SDS-log
+                                // text rendering and avoids decoding the binary LIP payload twice.
                                 if let Some(g) = &geoalarm
-                                    && let TelemetryEvent::SdsLog {
-                                        direction,
-                                        source_issi,
-                                        protocol_id,
-                                        text,
-                                        ..
-                                    } = &event
-                                    && *protocol_id == 10
-                                    && direction == "rx"
+                                    && let TelemetryEvent::MsPosition { issi, lat, lon, .. } = &event
                                 {
-                                    g.send_tetra_lip(*source_issi, text);
+                                    g.send_tetra_position(*issi, *lat, *lon);
                                 }
                                 if let Some(d) = &dash {
                                     d.handle_telemetry(event.clone());
