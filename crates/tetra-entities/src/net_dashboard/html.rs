@@ -6203,7 +6203,16 @@ function renderCalls(){
     const allocMeta=c.call_type==='individual'
       ? `<div style="margin-top:4px;font-family:var(--mono);font-size:10px;color:var(--text2)">${escHtml(privateAllocText(c))}</div>`
       : '';
-    const to=c.call_type==='group'?`GSSI ${c.gssi}`:`${idCell(c.called_issi)}${allocMeta}`;
+    let to;
+    if(c.call_type==='group'){
+      to=`<code>TG ${c.gssi}</code>`;
+    }else{
+      const targetCs=callsigns[c.called_issi];
+      const targetIdentity=targetCs&&targetCs.cs
+        ? qrzCallsign(targetCs.cs,targetCs.fl)
+        : `<code>${c.called_issi}</code>`;
+      to=`${targetIdentity}${allocMeta}`;
+    }
     const spk=c.active_speaker
       ? `${idCell(c.active_speaker)}${c.call_type==='individual'?` <span class="badge badge-dim" style="font-size:9px">${privatePartyRole(c,c.active_speaker)}</span>`:''}`
       : '<span style="color:var(--text3)">—</span>';
