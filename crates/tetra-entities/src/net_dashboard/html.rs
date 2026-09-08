@@ -364,6 +364,22 @@ a.callsign:hover{
 .map-popup-actions button:hover{background:#e8edf4;}
 .leaflet-container{font-family:var(--sans);}
 .leaflet-control-attribution{font-size:9px!important;}
+#radio-map.map-dark .leaflet-bar a{
+  background:#17202c;color:#dbe7f5;border-bottom-color:#334155;
+}
+#radio-map.map-dark .leaflet-bar a:hover{background:#202c3b;color:#fff;}
+#radio-map.map-dark .leaflet-control-attribution{
+  background:rgba(11,17,27,.82);color:#91a4bd;
+}
+#radio-map.map-dark .leaflet-control-attribution a{color:#68b5ff;}
+#radio-map.map-dark .leaflet-popup-content-wrapper,
+#radio-map.map-dark .leaflet-popup-tip{background:#141d29;color:#eaf2fb;}
+#radio-map.map-dark .map-popup{color:#eaf2fb;}
+#radio-map.map-dark .map-popup-key{color:#91a4bd;}
+#radio-map.map-dark .map-popup-actions button{
+  background:#1d2938;border-color:#3a4a60;color:#eaf2fb;
+}
+#radio-map.map-dark .map-popup-actions button:hover{background:#27364a;}
 @media(max-width:1050px){
   .map-shell{grid-template-columns:1fr;height:auto;}
   .map-main-card{height:62vh;min-height:480px;}
@@ -2709,6 +2725,9 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
               <label class="map-filter"><input type="checkbox" id="map-filter-rf" checked onchange="renderRadioMap()">RF</label>
               <label class="map-filter"><input type="checkbox" id="map-filter-net" checked onchange="renderRadioMap()">Net</label>
               <span class="map-toolbar-spacer"></span>
+              <label class="map-filter" title="Switch between standard OpenStreetMap and a dark OSM-based basemap">
+                <input type="checkbox" id="map-dark-toggle" onchange="setRadioMapDark(this.checked)">Dark map
+              </label>
               <span class="map-count" id="map-count">—</span>
             </div>
             <div id="radio-map"></div>
@@ -5103,6 +5122,7 @@ function showPage(name,el){
 
 // ── Radio map / TETRA LIP ─────────────────────────────────────────────────
 let radioMap=null;
+let radioMapTileLayer=null;
 let radioMapData={station:null,radios:[]};
 let radioMapMarkers=new Map();
 let radioMapStationMarker=null;
@@ -5167,6 +5187,46 @@ function mapOpenSds(issi){if(typeof openSds==='function')openSds(issi);}
 function mapOpenDgna(issi){if(typeof openDgna==='function')openDgna(issi);}
 function mapKick(issi){if(typeof kickMs==='function')kickMs(issi);}
 
+function radioMapDarkEnabled(){
+  const saved=localStorage.getItem('fs_map_dark');
+  if(saved==='1')return true;
+  if(saved==='0')return false;
+  return currentTheme==='dark';
+}
+function syncRadioMapDarkToggle(){
+  const cb=document.getElementById('map-dark-toggle');
+  if(cb)cb.checked=radioMapDarkEnabled();
+}
+function setRadioMapDark(enabled){
+  localStorage.setItem('fs_map_dark',enabled?'1':'0');
+  applyRadioMapTiles();
+}
+function applyRadioMapTiles(){
+  syncRadioMapDarkToggle();
+  const mapEl=document.getElementById('radio-map');
+  if(mapEl)mapEl.classList.toggle('map-dark',radioMapDarkEnabled());
+  if(!radioMap||!window.L)return;
+
+  if(radioMapTileLayer){
+    radioMap.removeLayer(radioMapTileLayer);
+    radioMapTileLayer=null;
+  }
+  if(radioMapDarkEnabled()){
+    // CARTO Dark Matter renders OpenStreetMap data in a native dark palette.
+    radioMapTileLayer=L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
+      subdomains:'abcd',
+      maxZoom:20,
+      attribution:'&copy; OpenStreetMap contributors &copy; CARTO'
+    }).addTo(radioMap);
+  }else{
+    radioMapTileLayer=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+      maxZoom:19,
+      attribution:'&copy; OpenStreetMap contributors'
+    }).addTo(radioMap);
+  }
+  radioMapTileLayer.bringToBack();
+}
+
 function initRadioMap(){
   if(radioMap)return true;
   if(!window.L){
@@ -5177,14 +5237,12 @@ function initRadioMap(){
   const el=document.getElementById('radio-map');
   if(el)el.innerHTML='';
   radioMap=L.map('radio-map',{zoomControl:true,preferCanvas:true});
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
-    maxZoom:19,
-    attribution:'&copy; OpenStreetMap contributors'
-  }).addTo(radioMap);
+  applyRadioMapTiles();
   radioMap.setView([52.0,19.0],6);
   return true;
 }
 function startRadioMap(){
+  syncRadioMapDarkToggle();
   if(!initRadioMap()){
     setTimeout(()=>{if(document.getElementById('page-map')?.classList.contains('active'))startRadioMap();},800);
   }else{
