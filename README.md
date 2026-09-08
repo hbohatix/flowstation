@@ -516,7 +516,38 @@ telegram_prefix = "GeoAlarm"
 
 ## Web Dashboard
 
-Available at `http://<bts-ip>:8080` when `[dashboard]` is configured.
+The dashboard is part of the default build and is enabled by adding a `[dashboard]`
+section to `config.toml`:
+
+```toml
+[dashboard]
+port = 8080
+bind = "0.0.0.0"
+```
+
+It is then available at `http://<bts-ip>:8080`. Remove the `[dashboard]` section
+to disable the HTTP dashboard.
+
+Optional authentication can be enabled by setting both credentials:
+
+```toml
+[dashboard]
+port = 8080
+bind = "0.0.0.0"
+username = "admin"
+password = "change-me"
+```
+
+With authentication enabled, the optional read-only public overview can be shown
+before login:
+
+```toml
+public_overview = true
+```
+
+The public overview exposes only the read-only station/RF status view; configuration
+and control functions remain behind authentication. For an internet-facing dashboard,
+use HTTPS through a reverse proxy rather than exposing the plain HTTP port directly.
 
 **Radios** — live table of registered terminals: ISSI, groups, RSSI signal bar, energy saving mode, last seen. Kick and SDS buttons per radio. Timeslot visualizer shows TS2–TS4 state in real time (idle / call allocated / voice active with animated waveform).
 
