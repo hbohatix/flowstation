@@ -119,6 +119,9 @@ pub struct DgnaLogEntry {
 #[derive(Debug, Default)]
 pub struct DashboardStateInner {
     pub ms_map: HashMap<u32, MsEntry>,
+    /// Last known decoded TETRA LIP position per ISSI. Entries intentionally survive
+    /// deregistration so the map can show an offline radio at its last known position.
+    pub positions: HashMap<u32, MsPositionEntry>,
     pub calls: HashMap<u16, CallEntry>,
     /// Active emergencies keyed by originating ISSI. Non-empty drives the dashboard emergency
     /// banner. Populated from the EmergencyAlarm / EmergencyCancel telemetry (emergency status).
@@ -226,6 +229,16 @@ pub struct MsEntry {
     pub energy_saving_mode: u8,
 }
 
+#[derive(Debug, Clone)]
+pub struct MsPositionEntry {
+    pub issi: u32,
+    pub lat: f64,
+    pub lon: f64,
+    pub speed_kmh: Option<f32>,
+    pub updated_at: Instant,
+    pub updated_ts: String,
+}
+
 #[derive(Debug)]
 pub struct CallEntry {
     pub call_id: u16,
@@ -284,6 +297,7 @@ impl DashboardStateInner {
         }
         Self {
             ms_map: HashMap::new(),
+            positions: HashMap::new(),
             calls: HashMap::new(),
             emergencies: HashMap::new(),
             log_ring: std::collections::VecDeque::with_capacity(500),
