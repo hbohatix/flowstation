@@ -4,6 +4,7 @@ pub const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>TETRA FlowStation</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <style>
 /* ── Reset ── */
 *{box-sizing:border-box;margin:0;padding:0;}
@@ -327,6 +328,47 @@ a.callsign:hover{
 }
 .public-rf-meta{margin-top:8px;white-space:normal;}
 @media(max-width:1050px){.public-dashboard-grid{grid-template-columns:1fr;}}
+
+/* ── Radio map ───────────────────────────────────────────────────────────── */
+.map-shell{display:grid;grid-template-columns:minmax(0,1fr) 350px;gap:14px;height:calc(100vh - 112px);min-height:520px;}
+.map-main-card,.map-side-card{height:100%;min-height:0;}
+.map-main-card .card-body{padding:0;height:calc(100% - 45px);display:flex;flex-direction:column;}
+.map-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 14px;border-bottom:1px solid var(--border);background:var(--bg2);}
+.map-filter{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text2);white-space:nowrap;}
+.map-filter input{accent-color:var(--accent);}
+.map-toolbar-spacer{flex:1;}
+.map-count{font-family:var(--mono);font-size:11px;color:var(--text3);}
+#radio-map{flex:1;min-height:0;background:var(--bg3);}
+.map-side-card .card-body{padding:0;height:calc(100% - 45px);overflow-y:auto;}
+.map-radio-list{display:flex;flex-direction:column;}
+.map-radio-item{padding:11px 12px;border-bottom:1px solid var(--border);cursor:pointer;transition:background .12s ease;}
+.map-radio-item:hover{background:color-mix(in srgb,var(--accent2) 7%,var(--bg2));}
+.map-radio-item:last-child{border-bottom:0;}
+.map-radio-head{display:flex;align-items:center;gap:7px;min-width:0;}
+.map-radio-name{font-family:var(--mono);font-weight:700;font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.map-radio-issi{font-family:var(--mono);font-size:11px;color:var(--accent);white-space:nowrap;}
+.map-radio-meta{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:6px;font-size:10px;color:var(--text3);}
+.map-radio-actions{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px;}
+.map-radio-actions .btn{padding:4px 8px;font-size:10px;}
+.map-no-position{opacity:.72;}
+.map-empty{padding:26px 14px;text-align:center;color:var(--text3);font-size:12px;}
+.map-status-dot{width:7px;height:7px;border-radius:50%;background:var(--text3);flex:0 0 auto;}
+.map-status-dot.online{background:var(--ok);box-shadow:0 0 8px color-mix(in srgb,var(--ok) 65%,transparent);}
+.map-popup{min-width:230px;font-family:var(--sans);color:#172033;}
+.map-popup-title{font-weight:700;font-size:13px;margin-bottom:5px;}
+.map-popup-row{display:flex;justify-content:space-between;gap:14px;font-size:11px;margin-top:4px;}
+.map-popup-key{color:#68768a;}
+.map-popup-val{font-family:var(--mono);font-weight:600;text-align:right;}
+.map-popup-actions{display:flex;gap:5px;flex-wrap:wrap;margin-top:10px;}
+.map-popup-actions button{border:1px solid #cbd4df;background:#f5f7fa;border-radius:5px;padding:4px 7px;font-size:10px;cursor:pointer;}
+.map-popup-actions button:hover{background:#e8edf4;}
+.leaflet-container{font-family:var(--sans);}
+.leaflet-control-attribution{font-size:9px!important;}
+@media(max-width:1050px){
+  .map-shell{grid-template-columns:1fr;height:auto;}
+  .map-main-card{height:62vh;min-height:480px;}
+  .map-side-card{height:auto;max-height:420px;}
+}
 
 .sidebar-nav{
   flex:1;padding:8px 8px;overflow-y:auto;overflow-x:hidden;
@@ -2343,6 +2385,10 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
       <span class="nav-icon" data-icon="lastheard"></span>
       <span class="nav-label" data-i18n="lastheard">LAST HEARD</span>
     </div>
+    <div class="nav-item" onclick="showPage('map',this)" id="nav-map">
+      <span class="nav-icon" data-icon="map"></span>
+      <span class="nav-label" data-i18n="map">MAP</span>
+    </div>
     <div class="nav-item" onclick="showPage('rf',this)" id="nav-rf">
       <span class="nav-icon" data-icon="rf"></span>
       <span class="nav-label" data-i18n="rf">RF</span>
@@ -2640,6 +2686,43 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
                 </tr></thead>
                 <tbody id="pub-lastheard-tbody"></tbody>
               </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── MAP / RADIO MANAGEMENT ── -->
+    <div class="page" id="page-map">
+      <div class="map-shell">
+        <div class="card map-main-card">
+          <div class="card-head">
+            <div class="card-title">RADIO MAP</div>
+            <div class="card-actions">
+              <button class="btn btn-sm" onclick="mapFitAll()">Fit all</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="map-toolbar">
+              <label class="map-filter"><input type="checkbox" id="map-filter-online" checked onchange="renderRadioMap()">Online</label>
+              <label class="map-filter"><input type="checkbox" id="map-filter-offline" checked onchange="renderRadioMap()">Offline / last known</label>
+              <label class="map-filter"><input type="checkbox" id="map-filter-rf" checked onchange="renderRadioMap()">RF</label>
+              <label class="map-filter"><input type="checkbox" id="map-filter-net" checked onchange="renderRadioMap()">Net</label>
+              <span class="map-toolbar-spacer"></span>
+              <span class="map-count" id="map-count">—</span>
+            </div>
+            <div id="radio-map"></div>
+          </div>
+        </div>
+
+        <div class="card map-side-card">
+          <div class="card-head">
+            <div class="card-title">RADIOS</div>
+            <div class="card-actions"><span class="muted" id="map-position-count">—</span></div>
+          </div>
+          <div class="card-body">
+            <div class="map-radio-list" id="map-radio-list">
+              <div class="map-empty">Waiting for radio data…</div>
             </div>
           </div>
         </div>
@@ -4306,6 +4389,7 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
   </div>
 </div>
 
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 // ── Icon system (SF-Symbols-style, design-language v3) ────────────────────
 // One cohesive family: 24×24 viewBox, fill=none, stroke=currentColor,
@@ -4319,6 +4403,7 @@ const ICONS = {
   dgna:'<path d="M6 8h8"/><path d="M6 12h8"/><path d="M6 16h6"/><path d="M17 7v10"/><path d="M14 10l3-3 3 3"/><path d="M14 14l3 3 3-3"/>',
   calls:'<path d="M6.5 4.5h3l1.2 3.2-1.7 1.3a11 11 0 0 0 4.7 4.7l1.3-1.7 3.2 1.2v3a1.5 1.5 0 0 1-1.6 1.5A13.5 13.5 0 0 1 5 6.1 1.5 1.5 0 0 1 6.5 4.5Z"/>',
   lastheard:'<path d="M4 12h2M8 8v8M12 5v14M16 8v8M20 12h-2"/>',
+  map:'<path d="m4 6 5-2 6 2 5-2v14l-5 2-6-2-5 2Z"/><path d="M9 4v14M15 6v14"/><circle cx="12" cy="11" r="1.7"/>',
   log:'<rect x="5" y="4" width="14" height="16" rx="2.5"/><path d="M9 9h6M9 13h6M9 17h3"/>',
   sdslog:'<path d="M4.5 6.5A1.5 1.5 0 0 1 6 5h12a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 18 16H9l-4 3v-3a1.5 1.5 0 0 1-.5-1.1Z"/>',
   rf:'<circle cx="12" cy="12" r="2"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M5 5a9 9 0 0 0 0 14M19 5a9 9 0 0 1 0 14"/>',
@@ -4385,7 +4470,7 @@ const LANGS={
   en:{
     bts_ip:'BTS IP',offline:'OFFLINE',online:'ONLINE',
     brew_online:'ONLINE',brew_offline:'OFFLINE',
-    stations:'Radios',calls:'Calls',lastheard:'Last Heard',log:'Log',rf:'RF',health:'Health',asterisk:'Asterisk SIP',dapnet:'DAPNET',echolink:'EchoLink',echolink_title:'EchoLink',meshcom:'MeshCom',meshcom_title:'MeshCom',geoalarm:'GeoAlarm',geoalarm_title:'GeoAlarm',config:'Config',
+    stations:'Radios',calls:'Calls',lastheard:'Last Heard',map:'Map',log:'Log',rf:'RF',health:'Health',asterisk:'Asterisk SIP',dapnet:'DAPNET',echolink:'EchoLink',echolink_title:'EchoLink',meshcom:'MeshCom',meshcom_title:'MeshCom',geoalarm:'GeoAlarm',geoalarm_title:'GeoAlarm',config:'Config',
     sdslog:'SDS Log',th_dir:'Dir',th_from:'From',th_to:'To',th_message:'Message',no_sds:'No SDS messages yet',sds_refresh:'Refresh',
     rf_freq:'Center freq',rf_rate:'Sample rate',rf_rms:'RMS',rf_peak:'Peak',rf_age:'Snapshot',
     rf_waiting:'waiting…',rf_live:'live',rf_stale:'stale',
@@ -4902,7 +4987,7 @@ function applyLang(){
   document.querySelectorAll('[data-i18n]').forEach(el=>el.textContent=t(el.getAttribute('data-i18n')));
   document.querySelectorAll('[data-i18n-tab]').forEach(el=>el.textContent=t(el.getAttribute('data-i18n-tab')));
   // Update nav labels
-  ['stations','calls','lastheard','log','config','telegram','system'].forEach(p=>{
+  ['stations','calls','lastheard','map','log','config','telegram','system'].forEach(p=>{
     const el=document.querySelector(`#nav-${p} .nav-label`);
     if(el)el.textContent=t(p);
   });
@@ -5002,6 +5087,8 @@ function showPage(name,el){
   if(name==='stations'){loadBtsInfoLegacy();loadDualCarrier();}
   if(name==='dgna'){syncDgnaAttachmentModePicker();renderDgnaPage();}
   if(name==='sdslog'){loadSdsLog();}
+  if(name==='map'){startRadioMap();}
+  else stopRadioMapPolling();
   if(name==='health'){loadHealthIntegrations();}
   if(name==='asterisk'){loadAsteriskStatus();loadSnomNotify();}
   if(name==='dapnet'){loadDapnet();loadDapnetLog();}
@@ -5012,6 +5099,192 @@ function showPage(name,el){
   else if(sysAutoRefreshTimer){clearInterval(sysAutoRefreshTimer);sysAutoRefreshTimer=null;const cb=document.getElementById('sys-autorefresh');if(cb)cb.checked=false;}
   if(name==='wifi')wifiRefresh();
   if(window.innerWidth<=700)closeMobileSidebar();
+}
+
+// ── Radio map / TETRA LIP ─────────────────────────────────────────────────
+let radioMap=null;
+let radioMapData={station:null,radios:[]};
+let radioMapMarkers=new Map();
+let radioMapStationMarker=null;
+let radioMapPollTimer=null;
+let radioMapHasFit=false;
+let radioMapLoading=false;
+
+function mapThemeColor(name,fallback){
+  const v=getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v||fallback;
+}
+function mapAge(sec){
+  sec=Math.max(0,Number(sec||0));
+  if(sec<60)return Math.floor(sec)+'s ago';
+  if(sec<3600)return Math.floor(sec/60)+'m ago';
+  if(sec<86400)return Math.floor(sec/3600)+'h ago';
+  return Math.floor(sec/86400)+'d ago';
+}
+function mapCallsignHtml(r){
+  if(r.callsign)return qrzCallsign(r.callsign,r.flag);
+  return '<code>'+r.issi+'</code>';
+}
+function mapDisplayName(r){
+  return r.callsign||('ISSI '+r.issi);
+}
+function mapRadioVisible(r){
+  const online=document.getElementById('map-filter-online')?.checked!==false;
+  const offline=document.getElementById('map-filter-offline')?.checked!==false;
+  const rf=document.getElementById('map-filter-rf')?.checked!==false;
+  const net=document.getElementById('map-filter-net')?.checked!==false;
+  if(r.online&&!online)return false;
+  if(!r.online&&!offline)return false;
+  if(r.source==='RF'&&!rf)return false;
+  if(r.source==='Net'&&!net)return false;
+  return true;
+}
+function mapPopupHtml(r){
+  const p=r.position;
+  const pos=p
+    ? ('<div class="map-popup-row"><span class="map-popup-key">Position</span><span class="map-popup-val">'+Number(p.lat).toFixed(6)+', '+Number(p.lon).toFixed(6)+'</span></div>'
+      +'<div class="map-popup-row"><span class="map-popup-key">Updated</span><span class="map-popup-val">'+mapAge(p.age_secs)+'</span></div>'
+      +(p.speed_kmh!=null?'<div class="map-popup-row"><span class="map-popup-key">Speed</span><span class="map-popup-val">'+Number(p.speed_kmh).toFixed(1)+' km/h</span></div>':''))
+    : '<div class="map-popup-row"><span class="map-popup-key">Position</span><span class="map-popup-val">No LIP fix</span></div>';
+  const gssi=r.selected_gssi!=null
+    ? '<div class="map-popup-row"><span class="map-popup-key">Active GSSI</span><span class="map-popup-val">'+r.selected_gssi+'</span></div>'
+    : '';
+  const rssi=r.rssi_dbfs!=null
+    ? '<div class="map-popup-row"><span class="map-popup-key">RSSI</span><span class="map-popup-val">'+Number(r.rssi_dbfs).toFixed(1)+' dBFS</span></div>'
+    : '';
+  const actions='<div class="map-popup-actions">'
+    +'<button onclick="mapOpenSds('+r.issi+')">SDS</button>'
+    +(r.can_dgna?'<button onclick="mapOpenDgna('+r.issi+')">DGNA</button>':'')
+    +(r.can_kick?'<button onclick="mapKick('+r.issi+')">Kick</button>':'')
+    +'</div>';
+  return '<div class="map-popup">'
+    +'<div class="map-popup-title">'+escHtml(mapDisplayName(r))+'</div>'
+    +'<div class="map-popup-row"><span class="map-popup-key">ISSI</span><span class="map-popup-val">'+r.issi+'</span></div>'
+    +'<div class="map-popup-row"><span class="map-popup-key">Status</span><span class="map-popup-val">'+(r.online?'ONLINE':'OFFLINE')+' · '+escHtml(r.source||'—')+'</span></div>'
+    +gssi+rssi+pos+actions+'</div>';
+}
+function mapOpenSds(issi){if(typeof openSds==='function')openSds(issi);}
+function mapOpenDgna(issi){if(typeof openDgna==='function')openDgna(issi);}
+function mapKick(issi){if(typeof kickMs==='function')kickMs(issi);}
+
+function initRadioMap(){
+  if(radioMap||!window.L)return;
+  radioMap=L.map('radio-map',{zoomControl:true,preferCanvas:true});
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+    maxZoom:19,
+    attribution:'&copy; OpenStreetMap contributors'
+  }).addTo(radioMap);
+  radioMap.setView([52.0,19.0],6);
+}
+function startRadioMap(){
+  initRadioMap();
+  setTimeout(()=>radioMap&&radioMap.invalidateSize(),60);
+  loadRadioMap();
+  if(!radioMapPollTimer)radioMapPollTimer=setInterval(loadRadioMap,2000);
+}
+function stopRadioMapPolling(){
+  if(radioMapPollTimer){clearInterval(radioMapPollTimer);radioMapPollTimer=null;}
+}
+async function loadRadioMap(){
+  if(radioMapLoading)return;
+  radioMapLoading=true;
+  try{
+    const r=await fetch('/api/map',{cache:'no-store'});
+    if(!r.ok)return;
+    radioMapData=await r.json();
+    renderRadioMap();
+  }catch(_){}
+  finally{radioMapLoading=false;}
+}
+function renderRadioMap(){
+  initRadioMap();
+  if(!radioMap)return;
+  const radios=(radioMapData.radios||[]).filter(mapRadioVisible);
+  const accent=mapThemeColor('--accent','#00d4a8');
+  const blue=mapThemeColor('--accent2','#4da6ff');
+  const muted=mapThemeColor('--text3','#64748b');
+
+  radioMapMarkers.forEach(m=>m.remove());
+  radioMapMarkers.clear();
+  if(radioMapStationMarker){radioMapStationMarker.remove();radioMapStationMarker=null;}
+
+  const station=radioMapData.station;
+  if(station){
+    radioMapStationMarker=L.circleMarker([station.lat,station.lon],{
+      radius:10,color:accent,weight:3,fillColor:accent,fillOpacity:.18
+    }).addTo(radioMap).bindTooltip('FlowStation',{direction:'top'});
+  }
+
+  let positioned=0;
+  radios.forEach(r=>{
+    if(!r.position)return;
+    positioned++;
+    const col=r.online?(r.source==='RF'?accent:blue):muted;
+    const marker=L.circleMarker([r.position.lat,r.position.lon],{
+      radius:r.online?8:6,
+      color:col,
+      weight:2,
+      fillColor:col,
+      fillOpacity:r.online?.78:.38
+    }).addTo(radioMap);
+    marker.bindTooltip(escHtml(mapDisplayName(r)),{direction:'top',offset:[0,-6]});
+    marker.bindPopup(mapPopupHtml(r),{maxWidth:320});
+    radioMapMarkers.set(r.issi,marker);
+  });
+
+  renderRadioMapList(radios);
+  const total=(radioMapData.radios||[]).length;
+  const mc=document.getElementById('map-count');
+  if(mc)mc.textContent=radios.length+' visible / '+total+' radios';
+  const pc=document.getElementById('map-position-count');
+  if(pc)pc.textContent=positioned+' positioned';
+
+  if(!radioMapHasFit&&positioned>0){
+    mapFitAll();
+    radioMapHasFit=true;
+  }
+}
+function renderRadioMapList(radios){
+  const el=document.getElementById('map-radio-list');if(!el)return;
+  if(!radios.length){el.innerHTML='<div class="map-empty">No radios match the current filters.</div>';return;}
+  const sorted=[...radios].sort((a,b)=>{
+    if(a.online!==b.online)return a.online?-1:1;
+    if(!!a.position!==!!b.position)return a.position?-1:1;
+    return mapDisplayName(a).localeCompare(mapDisplayName(b));
+  });
+  el.innerHTML=sorted.map(r=>{
+    const p=r.position;
+    const loc=p?('LIP · '+mapAge(p.age_secs)):'No position';
+    const gssi=r.selected_gssi!=null?('GSSI '+r.selected_gssi):'No active GSSI';
+    const actions='<div class="map-radio-actions">'
+      +'<button class="btn btn-sm" onclick="event.stopPropagation();mapOpenSds('+r.issi+')">SDS</button>'
+      +(r.can_dgna?'<button class="btn btn-sm" onclick="event.stopPropagation();mapOpenDgna('+r.issi+')">DGNA</button>':'')
+      +(r.can_kick?'<button class="btn btn-sm btn-danger" onclick="event.stopPropagation();mapKick('+r.issi+')">Kick</button>':'')
+      +'</div>';
+    return '<div class="map-radio-item '+(p?'':'map-no-position')+'" onclick="mapFocusRadio('+r.issi+')">'
+      +'<div class="map-radio-head"><span class="map-status-dot '+(r.online?'online':'')+'"></span>'
+      +'<span class="map-radio-name">'+mapCallsignHtml(r)+'</span>'
+      +(r.callsign?'<span class="map-radio-issi">'+r.issi+'</span>':'')
+      +'<span style="margin-left:auto" class="pill '+(r.source==='RF'?'pill-ok':'pill-info')+'">'+escHtml(r.source||'—')+'</span></div>'
+      +'<div class="map-radio-meta"><span>'+escHtml(loc)+'</span><span>·</span><span>'+escHtml(gssi)+'</span>'
+      +(r.rssi_dbfs!=null?'<span>·</span><span>'+Number(r.rssi_dbfs).toFixed(1)+' dBFS</span>':'')
+      +'</div>'+actions+'</div>';
+  }).join('');
+}
+function mapFocusRadio(issi){
+  const marker=radioMapMarkers.get(Number(issi));
+  if(!marker||!radioMap)return;
+  radioMap.setView(marker.getLatLng(),Math.max(radioMap.getZoom(),15),{animate:true});
+  marker.openPopup();
+}
+function mapFitAll(){
+  if(!radioMap)return;
+  const pts=[];
+  if(radioMapData.station)pts.push([radioMapData.station.lat,radioMapData.station.lon]);
+  (radioMapData.radios||[]).filter(mapRadioVisible).forEach(r=>{if(r.position)pts.push([r.position.lat,r.position.lon]);});
+  if(!pts.length)return;
+  if(pts.length===1){radioMap.setView(pts[0],15);return;}
+  radioMap.fitBounds(L.latLngBounds(pts),{padding:[35,35],maxZoom:15});
 }
 
 // ── WiFi management ────────────────────────────────────────────────────────
@@ -5613,6 +5886,9 @@ function handleMsg(msg){
        if(sg!=null&&state.ms[msg.speaker_issi]){state.ms[msg.speaker_issi].selected_group=sg;renderStations();}}
       if(msg.last_heard){pushLastHeard(msg.last_heard);renderLastHeard();}
       renderCalls();break;
+    case 'ms_position':
+      if(document.getElementById('page-map')?.classList.contains('active'))loadRadioMap();
+      break;
     case 'ms_energy_saving':
       if(state.ms[msg.issi])state.ms[msg.issi].energy_saving_mode=msg.mode;
       renderStations();break;
