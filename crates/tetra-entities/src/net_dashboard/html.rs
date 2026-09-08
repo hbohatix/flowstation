@@ -4389,7 +4389,7 @@ tbody tr:hover td{background:color-mix(in srgb,var(--bg3) 70%, transparent);}
   </div>
 </div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 // ── Icon system (SF-Symbols-style, design-language v3) ────────────────────
 // One cohesive family: 24×24 viewBox, fill=none, stroke=currentColor,
@@ -5168,17 +5168,28 @@ function mapOpenDgna(issi){if(typeof openDgna==='function')openDgna(issi);}
 function mapKick(issi){if(typeof kickMs==='function')kickMs(issi);}
 
 function initRadioMap(){
-  if(radioMap||!window.L)return;
+  if(radioMap)return true;
+  if(!window.L){
+    const el=document.getElementById('radio-map');
+    if(el)el.innerHTML='<div class="map-empty" style="padding-top:80px">Map library is still loading or unavailable. Radio management remains available in the list.</div>';
+    return false;
+  }
+  const el=document.getElementById('radio-map');
+  if(el)el.innerHTML='';
   radioMap=L.map('radio-map',{zoomControl:true,preferCanvas:true});
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
     maxZoom:19,
     attribution:'&copy; OpenStreetMap contributors'
   }).addTo(radioMap);
   radioMap.setView([52.0,19.0],6);
+  return true;
 }
 function startRadioMap(){
-  initRadioMap();
-  setTimeout(()=>radioMap&&radioMap.invalidateSize(),60);
+  if(!initRadioMap()){
+    setTimeout(()=>{if(document.getElementById('page-map')?.classList.contains('active'))startRadioMap();},800);
+  }else{
+    setTimeout(()=>radioMap&&radioMap.invalidateSize(),60);
+  }
   loadRadioMap();
   if(!radioMapPollTimer)radioMapPollTimer=setInterval(loadRadioMap,2000);
 }
@@ -5197,8 +5208,7 @@ async function loadRadioMap(){
   finally{radioMapLoading=false;}
 }
 function renderRadioMap(){
-  initRadioMap();
-  if(!radioMap)return;
+  if(!initRadioMap())return;
   const radios=(radioMapData.radios||[]).filter(mapRadioVisible);
   const accent=mapThemeColor('--accent','#00d4a8');
   const blue=mapThemeColor('--accent2','#4da6ff');
