@@ -1115,6 +1115,27 @@ impl DashboardServer {
                         e.last_seen = Instant::now();
                     }
                 }
+                TelemetryEvent::MsPosition {
+                    issi,
+                    lat,
+                    lon,
+                    speed_kmh,
+                } => {
+                    s.positions.insert(
+                        *issi,
+                        crate::net_dashboard::state::MsPositionEntry {
+                            issi: *issi,
+                            lat: *lat,
+                            lon: *lon,
+                            speed_kmh: *speed_kmh,
+                            updated_at: Instant::now(),
+                            updated_ts: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                        },
+                    );
+                    if let Some(e) = s.ms_map.get_mut(issi) {
+                        e.last_seen = Instant::now();
+                    }
+                }
                 TelemetryEvent::MsEnergySaving { issi, mode } => {
                     if let Some(e) = s.ms_map.get_mut(issi) {
                         e.energy_saving_mode = *mode;
@@ -1523,6 +1544,18 @@ fn event_to_ws_msg(event: &TelemetryEvent) -> Option<String> {
             "detail":status.detail,
         }),
         TelemetryEvent::MsRssi { issi, rssi_dbfs } => serde_json::json!({"type":"ms_rssi","issi":issi,"rssi_dbfs":rssi_dbfs}),
+        TelemetryEvent::MsPosition {
+            issi,
+            lat,
+            lon,
+            speed_kmh,
+        } => serde_json::json!({
+            "type":"ms_position",
+            "issi":issi,
+            "lat":lat,
+            "lon":lon,
+            "speed_kmh":speed_kmh
+        }),
         TelemetryEvent::MsEnergySaving { issi, mode } => serde_json::json!({"type":"ms_energy_saving","issi":issi,"mode":mode}),
         TelemetryEvent::GroupCallStarted {
             call_id,
