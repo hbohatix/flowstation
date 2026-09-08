@@ -1776,6 +1776,111 @@ fn serve_sds_log(stream: TcpStream, state: &DashboardState) {
     http_json_response(stream, 200, &body);
 }
 
+/// GET /api/map — authenticated live/last-known radio map snapshot.
+///
+/// This is intentionally separate from /api/public: subscriber coordinates are operator data
+/// and are never exposed by the anonymous public overview.
+fn serve_map_snapshot(
+    stream: TcpStream,
+    state: &DashboardState,
+    radioid: &crate::net_dashboard::radioid::RadioIdCache,
+    shared_config: Option<&tetra_config::bluestation::SharedConfig>,
+) {
+    use std::collections::BTreeSet;
+
+    let body = match state.read() {
+        Ok(s) => {
+            let mut ids = BTreeSet::new();
+            ids.extend(s.ms_map.keys().copied());
+            ids.extend(s.positions.keys().copied());
+
+            // Include remote subscribers that are currently part of a Brew-backed call even
+            // though they have no local MM registration or position.
+            for c in s.calls.values() {
+                if c.caller_issi != 0 {
+                    ids.insert(c.caller_issi);
+                }
+                if let Some(spk) = c.speaker_issi
+                    && spk != 0
+                {
+                    ids.insert(spk);
+                }
+                if !c.is_group && c.called_issi != 0 {
+                    ids.insert(c.called_issi);
+                }
+            }
+
+            let radios = ids
+                .into_iter()
+                .map(|issi| {
+                    let ms = s.ms_map.get(&issi);
+                    let pos = s.positions.get(&issi);
+                    let active_call = s.calls.values().find(|c| {
+                        c.caller_issi == issi
+                            || c.speaker_issi == Some(issi)
+                            || (!c.is_group && c.called_issi == issi)
+                    });
+                    let active_gssi = active_call.and_then(|c| c.is_group.then_some(c.gssi));
+                    let (callsign, flag) = public_identity(radioid, issi);
+
+                    // A decoded LIP position can only have arrived from the local air interface
+                    // today, so an offline last-known-position entry remains RF rather than
+                    // changing to Net after deregistration.
+                    let source = if ms.is_some() || pos.is_some() { "RF" } else { "Net" };
+                    let online = ms.is_some() || active_call.is_some();
+
+                    serde_json::json!({
+                        "issi": issi,
+                        "callsign": callsign,
+                        "flag": flag,
+                        "source": source,
+                        "online": online,
+                        "registered": ms.is_some(),
+                        "rssi_dbfs": ms.and_then(|m| m.rssi_dbfs),
+                        "last_seen_secs": ms.map(|m| m.last_seen.elapsed().as_secs()),
+                        "selected_gssi": ms.and_then(|m| m.selected_group).or(active_gssi),
+                        "groups": ms.map(|m| m.groups.clone()).unwrap_or_default(),
+                        "position": pos.map(|p| serde_json::json!({
+                            "lat": p.lat,
+                            "lon": p.lon,
+                            "speed_kmh": p.speed_kmh,
+                            "updated_at": p.updated_ts,
+                            "age_secs": p.updated_at.elapsed().as_secs(),
+                        })),
+                        "can_sds": true,
+                        "can_dgna": ms.is_some(),
+                        "can_kick": ms.is_some(),
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            let station = shared_config.and_then(|cfg| {
+                let geo = cfg.effective_geoalarm();
+                let valid = geo.flowstation_lat.is_finite()
+                    && geo.flowstation_lon.is_finite()
+                    && (-90.0..=90.0).contains(&geo.flowstation_lat)
+                    && (-180.0..=180.0).contains(&geo.flowstation_lon)
+                    && (geo.flowstation_lat.abs() > f64::EPSILON || geo.flowstation_lon.abs() > f64::EPSILON);
+                valid.then(|| {
+                    serde_json::json!({
+                        "lat": geo.flowstation_lat,
+                        "lon": geo.flowstation_lon,
+                    })
+                })
+            });
+
+            serde_json::json!({
+                "station": station,
+                "radios": radios,
+            })
+            .to_string()
+        }
+        Err(_) => serde_json::json!({"station":null,"radios":[]}).to_string(),
+    };
+
+    http_json_response(stream, 200, &body);
+}
+
 /// GET /api/dgna-log — the persisted DGNA activity log as a JSON array, newest entry first.
 fn serve_dgna_log(stream: TcpStream, state: &DashboardState) {
     let body = {
@@ -2040,6 +2145,9 @@ fn handle_connection(
     // blocked operators doing DGNA/SDS from the BTS itself. Set a username/password to lock it down.
     if req_line.contains("/ws") {
         handle_ws(stream, state, clients, cmd_tx, update_state, shared_config.clone());
+    } else if req_line.contains("GET /api/map ") || req_line.contains("GET /api/map?") {
+        drain_http_headers(&mut stream);
+        serve_map_snapshot(stream, &state, &radioid, shared_config.as_ref());
     } else if req_line.contains("GET /api/system/brightness") {
         // Backlight status probe (FH-FEAT-008) — lets the UI hide the slider on a panel-less host.
         drain_http_headers(&mut stream);
