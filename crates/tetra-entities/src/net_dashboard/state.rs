@@ -354,6 +354,13 @@ impl DashboardStateInner {
     /// then persist the whole ring to disk so it survives a restart. The file is small and
     /// SDS traffic is low-volume, so a full rewrite per entry is cheap.
     pub fn push_sds_log(&mut self, direction: &str, source_issi: u32, dest_issi: u32, is_group: bool, protocol_id: u8, text: String) {
+        // SDS-TL delivery reports arrive with a text-messaging PID (0x82/0x89) but no text body.
+        // Label them explicitly instead of letting the dashboard fall back to the generic [text].
+        let text = if text.is_empty() && matches!(protocol_id, 0x82 | 0x89) {
+            "[SDS-TL ACK]".to_string()
+        } else {
+            text
+        };
         let entry = SdsLogEntry {
             ts: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
             direction: direction.to_string(),
