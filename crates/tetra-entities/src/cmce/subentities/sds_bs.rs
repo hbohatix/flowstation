@@ -280,9 +280,7 @@ impl SdsBsSubentity {
             if let Some(pos) = crate::net_location::decode_tetra_lip_position(data) {
                 self.emit(TelemetryEvent::MsPosition {
                     issi: source_issi,
-                    lat: pos.lat,
-                    lon: pos.lon,
-                    speed_kmh: pos.speed_kmh,
+                    position: pos,
                 });
             }
         }

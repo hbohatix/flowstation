@@ -577,9 +577,9 @@ fn main() {
                                 // dashboard map. This keeps geofencing independent from SDS-log
                                 // text rendering and avoids decoding the binary LIP payload twice.
                                 if let Some(g) = &geoalarm
-                                    && let TelemetryEvent::MsPosition { issi, lat, lon, .. } = &event
+                                    && let TelemetryEvent::MsPosition { issi, position } = &event
                                 {
-                                    g.send_tetra_position(*issi, *lat, *lon);
+                                    g.send_tetra_position(*issi, position.lat, position.lon);
                                 }
                                 if let Some(d) = &dash {
                                     d.handle_telemetry(event.clone());

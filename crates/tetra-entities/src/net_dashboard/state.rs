@@ -232,9 +232,7 @@ pub struct MsEntry {
 #[derive(Debug, Clone)]
 pub struct MsPositionEntry {
     pub issi: u32,
-    pub lat: f64,
-    pub lon: f64,
-    pub speed_kmh: Option<f32>,
+    pub position: crate::net_location::TetraLipPosition,
     pub updated_at: Instant,
     pub updated_ts: String,
 }

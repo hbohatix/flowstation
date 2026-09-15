@@ -1115,19 +1115,12 @@ impl DashboardServer {
                         e.last_seen = Instant::now();
                     }
                 }
-                TelemetryEvent::MsPosition {
-                    issi,
-                    lat,
-                    lon,
-                    speed_kmh,
-                } => {
+                TelemetryEvent::MsPosition { issi, position } => {
                     s.positions.insert(
                         *issi,
                         crate::net_dashboard::state::MsPositionEntry {
                             issi: *issi,
-                            lat: *lat,
-                            lon: *lon,
-                            speed_kmh: *speed_kmh,
+                            position: position.clone(),
                             updated_at: Instant::now(),
                             updated_ts: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                         },
@@ -1544,17 +1537,10 @@ fn event_to_ws_msg(event: &TelemetryEvent) -> Option<String> {
             "detail":status.detail,
         }),
         TelemetryEvent::MsRssi { issi, rssi_dbfs } => serde_json::json!({"type":"ms_rssi","issi":issi,"rssi_dbfs":rssi_dbfs}),
-        TelemetryEvent::MsPosition {
-            issi,
-            lat,
-            lon,
-            speed_kmh,
-        } => serde_json::json!({
+        TelemetryEvent::MsPosition { issi, position } => serde_json::json!({
             "type":"ms_position",
             "issi":issi,
-            "lat":lat,
-            "lon":lon,
-            "speed_kmh":speed_kmh
+            "position":position
         }),
         TelemetryEvent::MsEnergySaving { issi, mode } => serde_json::json!({"type":"ms_energy_saving","issi":issi,"mode":mode}),
         TelemetryEvent::GroupCallStarted {
@@ -1788,6 +1774,14 @@ fn serve_map_snapshot(
 ) {
     use std::collections::BTreeSet;
 
+    #[derive(serde::Serialize)]
+    struct MapPositionSnapshot<'a> {
+        #[serde(flatten)]
+        position: &'a crate::net_location::TetraLipPosition,
+        updated_at: &'a str,
+        age_secs: u64,
+    }
+
     let body = match state.read() {
         Ok(s) => {
             let mut ids = BTreeSet::new();
@@ -1840,13 +1834,11 @@ fn serve_map_snapshot(
                         "last_seen_secs": ms.map(|m| m.last_seen.elapsed().as_secs()),
                         "selected_gssi": ms.and_then(|m| m.selected_group).or(active_gssi),
                         "groups": ms.map(|m| m.groups.clone()).unwrap_or_default(),
-                        "position": pos.map(|p| serde_json::json!({
-                            "lat": p.lat,
-                            "lon": p.lon,
-                            "speed_kmh": p.speed_kmh,
-                            "updated_at": p.updated_ts,
-                            "age_secs": p.updated_at.elapsed().as_secs(),
-                        })),
+                        "position": pos.map(|p| MapPositionSnapshot {
+                            position: &p.position,
+                            updated_at: &p.updated_ts,
+                            age_secs: p.updated_at.elapsed().as_secs(),
+                        }),
                         "can_sds": true,
                         "can_dgna": ms.is_some(),
                         "can_kick": ms.is_some(),
@@ -6168,11 +6160,12 @@ fn serve_dapnet_send(
 mod tests {
     use super::{
         DashboardServer, LoginThrottle, MAX_TETRA_SSI, UpdateState, activate_config_profile, binary_built_from,
-        handle_ws_command, is_masked_secret_key, mask_config_secrets, normalize_mojibake_html,
+        event_to_ws_msg, handle_ws_command, is_masked_secret_key, mask_config_secrets, normalize_mojibake_html,
         restore_config_from_backup, save_config_profile, timing_safe_eq, write_config_validated,
     };
     use crate::net_control::commands::ControlCommand;
     use crate::net_dashboard::state::DashboardStateInner;
+    use crate::net_location::{TetraLipLocationShape, TetraLipPosition, TetraLipReportType};
     use crate::net_telemetry::TelemetryEvent;
     use std::sync::{Arc, Mutex, RwLock};
 
@@ -6361,6 +6354,64 @@ dest_issi = 2632585
             server_version: 0,
         });
         assert_eq!(v(), 1, "reconnect reporting v0 must not downgrade a confirmed v1");
+    }
+
+    /// LIP tracking is driven by the source ISSI on the received SDS. It must discover a radio
+    /// that is absent from both the live MM registry and every config allowlist.
+    #[test]
+    fn lip_position_discovers_unregistered_issi_without_configuration() {
+        let server = DashboardServer::new("/tmp/fs_lip_discovery_test_config.toml".to_string());
+        let position = TetraLipPosition {
+            lat: 54.352,
+            lon: 18.6466,
+            report_type: TetraLipReportType::Short,
+            location_shape: TetraLipLocationShape::PointWithPositionError,
+            time_elapsed: Some(0),
+            time_of_position: None,
+            position_error_code: Some(1),
+            position_error_m: Some(20.0),
+            horizontal_uncertainty_m: None,
+            ellipse_semi_major_m: None,
+            ellipse_semi_minor_m: None,
+            ellipse_angle_deg: None,
+            arc_inner_radius_m: None,
+            arc_outer_radius_m: None,
+            arc_start_deg: None,
+            arc_stop_deg: None,
+            confidence_percent: None,
+            altitude_m: None,
+            altitude_reference: None,
+            altitude_accuracy_m: None,
+            speed_kmh: Some(12.0),
+            speed_accuracy_kmh: None,
+            vertical_speed_kmh: None,
+            vertical_speed_accuracy_kmh: None,
+            heading_deg: Some(90.0),
+            heading_accuracy_deg: None,
+            acknowledgement_requested: false,
+            reason_for_sending: Some(3),
+            user_defined_data: None,
+        };
+
+        server.handle_telemetry(TelemetryEvent::MsPosition {
+            issi: 7_654_321,
+            position: position.clone(),
+        });
+
+        let state = server.state.read().unwrap();
+        assert!(!state.ms_map.contains_key(&7_654_321), "test ISSI must not be pre-registered");
+        assert_eq!(state.positions.get(&7_654_321).map(|entry| &entry.position), Some(&position));
+        drop(state);
+
+        let message = event_to_ws_msg(&TelemetryEvent::MsPosition {
+            issi: 7_654_321,
+            position,
+        })
+        .expect("position websocket event");
+        let json: serde_json::Value = serde_json::from_str(&message).expect("valid JSON");
+        assert_eq!(json["issi"], 7_654_321);
+        assert_eq!(json["position"]["report_type"], "short");
+        assert_eq!(json["position"]["reason_for_sending"], 3);
     }
 
     #[test]

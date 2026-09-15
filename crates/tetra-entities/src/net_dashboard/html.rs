@@ -354,7 +354,7 @@ a.callsign:hover{
 .map-empty{padding:26px 14px;text-align:center;color:var(--text3);font-size:12px;}
 .map-status-dot{width:7px;height:7px;border-radius:50%;background:var(--text3);flex:0 0 auto;}
 .map-status-dot.online{background:var(--ok);box-shadow:0 0 8px color-mix(in srgb,var(--ok) 65%,transparent);}
-.map-popup{min-width:230px;font-family:var(--sans);color:#172033;}
+.map-popup{min-width:280px;font-family:var(--sans);color:#172033;}
 .map-popup-title{font-weight:700;font-size:13px;margin-bottom:5px;}
 .map-popup-row{display:flex;justify-content:space-between;gap:14px;font-size:11px;margin-top:4px;}
 .map-popup-key{color:#68768a;}
@@ -5162,13 +5162,100 @@ function mapRadioVisible(r){
   if(r.source==='Net'&&!net)return false;
   return true;
 }
+function mapLipRow(key,value){
+  if(value==null||value==='')return '';
+  return '<div class="map-popup-row"><span class="map-popup-key">'+escHtml(key)+'</span><span class="map-popup-val">'+escHtml(String(value))+'</span></div>';
+}
+function mapLipDistance(m){
+  m=Number(m);
+  if(!Number.isFinite(m))return null;
+  if(m>=1000)return (m/1000).toLocaleString(undefined,{maximumFractionDigits:m>=10000?0:1})+' km';
+  return m.toLocaleString(undefined,{maximumFractionDigits:m<10?1:0})+' m';
+}
+function mapLipShape(shape){
+  const labels={
+    point:'Point',circle:'Circle',ellipse:'Ellipse',point_with_altitude:'Point + altitude',
+    circle_with_altitude:'Circle + altitude',ellipse_with_altitude:'Ellipse + altitude',
+    circle_with_altitude_and_uncertainty:'Circle + altitude uncertainty',
+    ellipse_with_altitude_and_uncertainty:'Ellipse + altitude uncertainty',
+    arc:'Arc',point_with_position_error:'Point + position error'
+  };
+  return labels[shape]||String(shape||'Unknown');
+}
+function mapLipElapsed(code){
+  return ['< 5 s','< 5 min','< 30 min','Unknown'][Number(code)]||null;
+}
+function mapLipPositionError(p){
+  if(Number(p.position_error_code)===5)return '≤ '+mapLipDistance(p.position_error_m);
+  if(p.position_error_m!=null)return '< '+mapLipDistance(p.position_error_m);
+  if(Number(p.position_error_code)===6)return '> 200 km';
+  if(Number(p.position_error_code)===7)return 'Unknown';
+  return null;
+}
+function mapLipReason(code){
+  const labels={
+    0:'Power on',1:'Power off',2:'Emergency',3:'PTT',4:'Status',5:'TX inhibit on',
+    6:'TX inhibit off',7:'TMO access',8:'DMO on',9:'Service restored',10:'Service lost',
+    11:'Cell reselection',12:'Low battery',13:'Car kit connected',14:'Car kit disconnected',
+    15:'Transfer initialization',16:'Arrival at destination',17:'Arrival at location',
+    18:'Approaching location',19:'SDS type-1',20:'User application',21:'Positioning lost',
+    22:'Positioning restored',23:'Leaving point',24:'Ambience listening',
+    25:'Temporary reporting started',26:'Normal reporting resumed',27:'Call setup type 1',
+    28:'Call setup type 2',29:'Positioning device on',30:'Positioning device off',
+    32:'Immediate location response',129:'Maximum reporting interval',130:'Maximum reporting distance'
+  };
+  return labels[Number(code)]||('Code '+code);
+}
+function mapLipPositionTime(v){
+  if(!v)return null;
+  const pad=n=>String(n).padStart(2,'0');
+  return 'day '+pad(v.day)+' · '+pad(v.hour)+':'+pad(v.minute)+':'+pad(v.second);
+}
 function mapPopupHtml(r){
   const p=r.position;
-  const pos=p
-    ? ('<div class="map-popup-row"><span class="map-popup-key">Position</span><span class="map-popup-val">'+Number(p.lat).toFixed(6)+', '+Number(p.lon).toFixed(6)+'</span></div>'
-      +'<div class="map-popup-row"><span class="map-popup-key">Updated</span><span class="map-popup-val">'+mapAge(p.age_secs)+'</span></div>'
-      +(p.speed_kmh!=null?'<div class="map-popup-row"><span class="map-popup-key">Speed</span><span class="map-popup-val">'+Number(p.speed_kmh).toFixed(1)+' km/h</span></div>':''))
-    : '<div class="map-popup-row"><span class="map-popup-key">Position</span><span class="map-popup-val">No LIP fix</span></div>';
+  let pos=mapLipRow('Position','No LIP fix');
+  if(p){
+    const report=(p.report_type==='long'?'Long':'Short')+' · '+mapLipShape(p.location_shape);
+    const accuracy=p.horizontal_uncertainty_m!=null
+      ? '< '+mapLipDistance(p.horizontal_uncertainty_m)
+      : mapLipPositionError(p);
+    const altitude=p.altitude_m!=null
+      ? Number(p.altitude_m).toLocaleString()+' m · '+(p.altitude_reference==='user_defined'?'user reference':'WGS84')
+      : null;
+    const ellipse=(p.ellipse_semi_major_m!=null&&p.ellipse_semi_minor_m!=null)
+      ? mapLipDistance(p.ellipse_semi_major_m)+' × '+mapLipDistance(p.ellipse_semi_minor_m)+(p.ellipse_angle_deg!=null?' @ '+Number(p.ellipse_angle_deg).toFixed(1)+'°':'')
+      : null;
+    const arc=(p.arc_inner_radius_m!=null&&p.arc_outer_radius_m!=null)
+      ? mapLipDistance(p.arc_inner_radius_m)+'–'+mapLipDistance(p.arc_outer_radius_m)+' · '+Number(p.arc_start_deg).toFixed(1)+'–'+Number(p.arc_stop_deg).toFixed(1)+'°'
+      : null;
+    const speed=p.speed_kmh!=null
+      ? Number(p.speed_kmh).toFixed(1)+' km/h'+(p.speed_accuracy_kmh!=null?' ±<'+Number(p.speed_accuracy_kmh).toFixed(1)+' km/h':'')
+      : null;
+    const vertical=p.vertical_speed_kmh!=null
+      ? (Number(p.vertical_speed_kmh)>=0?'↑ ':'↓ ')+Math.abs(Number(p.vertical_speed_kmh)).toFixed(1)+' km/h'
+        +(p.vertical_speed_accuracy_kmh!=null?' ±<'+Number(p.vertical_speed_accuracy_kmh).toFixed(1)+' km/h':'')
+      : null;
+    const heading=p.heading_deg!=null
+      ? Number(p.heading_deg).toFixed(1)+'°'+(p.heading_accuracy_deg!=null?' ±<'+Number(p.heading_accuracy_deg).toFixed(1)+'°':'')
+      : null;
+    pos=mapLipRow('Position',Number(p.lat).toFixed(6)+', '+Number(p.lon).toFixed(6))
+      +mapLipRow('Updated',mapAge(p.age_secs))
+      +mapLipRow('LIP report',report)
+      +mapLipRow('Position age',mapLipElapsed(p.time_elapsed))
+      +mapLipRow('Position time',mapLipPositionTime(p.time_of_position))
+      +mapLipRow('Accuracy',accuracy)
+      +mapLipRow('Ellipse half-axes',ellipse)
+      +mapLipRow('Arc',arc)
+      +mapLipRow('Confidence',p.confidence_percent!=null?Number(p.confidence_percent).toFixed(1).replace('.0','')+'%':null)
+      +mapLipRow('Altitude',altitude)
+      +mapLipRow('Altitude accuracy',p.altitude_accuracy_m!=null?'< '+mapLipDistance(p.altitude_accuracy_m):null)
+      +mapLipRow('Speed',speed)
+      +mapLipRow('Vertical speed',vertical)
+      +mapLipRow('Heading',heading)
+      +mapLipRow('Reason',p.reason_for_sending!=null?mapLipReason(p.reason_for_sending):null)
+      +mapLipRow('User data',p.user_defined_data!=null?'0x'+Number(p.user_defined_data).toString(16).toUpperCase().padStart(2,'0'):null)
+      +(p.report_type==='long'?mapLipRow('LIP ACK',p.acknowledgement_requested?'Requested':'Not requested'):'');
+  }
   const gssi=r.selected_gssi!=null
     ? '<div class="map-popup-row"><span class="map-popup-key">Active GSSI</span><span class="map-popup-val">'+r.selected_gssi+'</span></div>'
     : '';
@@ -5317,7 +5404,14 @@ function renderRadioMapList(radios){
   });
   el.innerHTML=sorted.map(r=>{
     const p=r.position;
-    const loc=p?('LIP · '+mapAge(p.age_secs)):'No position';
+    const lipBits=[];
+    if(p){
+      lipBits.push('LIP · '+mapAge(p.age_secs));
+      if(p.speed_kmh!=null)lipBits.push(Number(p.speed_kmh).toFixed(1)+' km/h');
+      if(p.altitude_m!=null)lipBits.push(Number(p.altitude_m).toFixed(0)+' m');
+      if(p.heading_deg!=null)lipBits.push(Number(p.heading_deg).toFixed(0)+'°');
+    }
+    const loc=p?lipBits.join(' · '):'No position';
     const gssi=r.selected_gssi!=null?('GSSI '+r.selected_gssi):'No active GSSI';
     const actions='<div class="map-radio-actions">'
       +'<button class="btn btn-sm" onclick="event.stopPropagation();mapOpenSds('+r.issi+')">SDS</button>'

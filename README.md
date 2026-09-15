@@ -75,6 +75,7 @@ Built in Rust on top of [tetra-bluestation](https://github.com/MidnightBlueLabs/
 | Live timeslot visualizer (TS2–TS4 state, call/voice indicator) | ✅ |
 | Kick terminal / send SDS from dashboard | ✅ |
 | Dynamic Group Number Assignment (DGNA) — assign/remove a talkgroup on a radio over the air from the dashboard | ✅ |
+| Live LIP radio map — automatic ISSI discovery, full location metadata and radio actions | ✅ |
 | Config editor with save, backup, restore | ✅ |
 | Multiple config profiles — activate and edit inactive profiles | ✅ |
 | Fallback config on bad edit (with dashboard error banner) | ✅ |
@@ -550,6 +551,12 @@ and control functions remain behind authentication. For an internet-facing dashb
 use HTTPS through a reverse proxy rather than exposing the plain HTTP port directly.
 
 **Radios** — live table of registered terminals: ISSI, groups, RSSI signal bar, energy saving mode, last seen. Kick and SDS buttons per radio. Timeslot visualizer shows TS2–TS4 state in real time (idle / call allocated / voice active with animated waveform).
+
+**Map** — authenticated live map of every dynamically discovered terminal. An inbound LIP report
+creates or updates its ISSI automatically; there is no per-radio map list in `config.toml`. Popups
+show the standardized report type and location shape, position age/time, accuracy or uncertainty,
+altitude/reference, horizontal and vertical speed, heading, confidence and reason for sending when
+those fields are present. Last known positions remain visible after a terminal deregisters.
 
 **Calls** — active calls: caller, destination, duration, simplex/duplex flag.
 

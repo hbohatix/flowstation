@@ -230,9 +230,7 @@ pub enum TelemetryEvent {
     /// geofencing is disabled.
     MsPosition {
         issi: u32,
-        lat: f64,
-        lon: f64,
-        speed_kmh: Option<f32>,
+        position: crate::net_location::TetraLipPosition,
     },
 }
 
