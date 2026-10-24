@@ -76,6 +76,8 @@ pub struct DispatcherEntity {
     link_up: bool,
     dispatcher_issi: Option<u32>,
     monitored: HashSet<u32>,
+    /// Monitor every group call (protocol v2 `MonitorSet { all: true }`).
+    monitor_all: bool,
     tx: HashMap<Uuid, TxSession>,
     /// Group calls seen via FloorGranted, for routing uplink voice: call_id → state.
     calls: HashMap<u16, KnownCall>,
@@ -85,8 +87,15 @@ pub struct DispatcherEntity {
 }
 
 impl DispatcherEntity {
-    /// Start the entity and its worker thread. `telemetry` feeds subscriber/call state to the core.
-    pub fn new<T: NetworkTransport + 'static>(config: SharedConfig, transport: T, telemetry: Option<TelemetrySource>) -> Self {
+    /// Start the entity and its worker thread. `telemetry` feeds subscriber/call state to the core;
+    /// `cmce_commands` is the CMCE control channel used for console DGNA and SDS.
+    pub fn new<T: NetworkTransport + 'static>(
+        config: SharedConfig,
+        transport: T,
+        telemetry: Option<TelemetrySource>,
+        cmce_commands: Option<Sender<crate::net_control::ControlCommand>>,
+        mm_commands: Option<Sender<crate::net_control::ControlCommand>>,
+    ) -> Self {
         let cfg = config.config().dispatcher.clone().expect("DispatcherEntity requires a [dispatcher] section");
         let (event_tx, event_rx) = bounded(EVENT_QUEUE);
         let (cmd_tx, cmd_rx) = bounded(COMMAND_QUEUE);
@@ -97,10 +106,19 @@ impl DispatcherEntity {
             fallback_issi: cfg.fallback_issi,
             dispatch_gssis: cfg.gssis.clone(),
             link_timeout: std::time::Duration::from_millis(u64::from(cfg.link_timeout_ms)),
+            dgna_attachment_mode: config.config().cell.dgna_attachment_mode,
         };
         let handle = thread::Builder::new()
             .name("dispatcher-worker".into())
-            .spawn(move || DispatcherWorker::new(worker_cfg, transport, event_tx, cmd_rx, telemetry).run())
+            .spawn({
+                let station = config.clone();
+                move || {
+                    DispatcherWorker::new(worker_cfg, transport, event_tx, cmd_rx, telemetry, cmce_commands)
+                        .with_station(station)
+                        .with_mm(mm_commands)
+                        .run()
+                }
+            })
             .expect("failed to spawn dispatcher worker thread");
         let mut entity = Self::from_channels(config, event_rx, cmd_tx);
         entity.worker = Some(handle);
@@ -121,6 +139,7 @@ impl DispatcherEntity {
             link_up: false,
             dispatcher_issi: fallback,
             monitored: HashSet::new(),
+            monitor_all: false,
             tx: HashMap::new(),
             calls: HashMap::new(),
             calls_by_slot: HashMap::new(),
@@ -162,13 +181,17 @@ impl DispatcherEntity {
                 self.link_up = false;
                 self.end_all_tx(queue, StopReason::LinkLost);
                 self.monitored.clear();
+                self.monitor_all = false;
             }
             DispatcherEvent::DispatcherIssi(issi) => self.dispatcher_issi = issi,
             DispatcherEvent::FromCore(CoreToNode::GroupTxRequest { req_id, gssi, priority }) => {
                 self.start_tx(queue, req_id, gssi, priority);
             }
             DispatcherEvent::FromCore(CoreToNode::GroupTxStop { call_id }) => self.stop_tx(queue, call_id, StopReason::Requested),
-            DispatcherEvent::FromCore(CoreToNode::MonitorSet { gssis }) => self.monitored = gssis.into_iter().collect(),
+            DispatcherEvent::FromCore(CoreToNode::MonitorSet { all, gssis }) => {
+                self.monitor_all = all;
+                self.monitored = gssis.into_iter().collect();
+            }
             DispatcherEvent::FromCore(other) => tracing::debug!("Dispatcher: ignoring {:?}", other),
             DispatcherEvent::VoiceDl(VoiceDatagram::Dl { call_id, frame, .. }) => {
                 if let Some(session) = self.tx.values_mut().find(|s| s.call_id == Some(call_id)) {
@@ -189,6 +212,11 @@ impl DispatcherEntity {
         let Some(issi) = self.dispatcher_issi else {
             return self.reject(req_id, RejectReason::NoDispatcherIssi);
         };
+        // Our own previous transmission still playing out its buffer: end it now and go on.
+        let draining: Vec<Uuid> = self.tx.iter().filter(|(_, s)| s.gssi == gssi && s.stop_requested.is_some()).map(|(u, _)| *u).collect();
+        for uuid in draining {
+            self.finish_tx(queue, uuid, StopReason::Requested);
+        }
         if self.tx.values().any(|s| s.gssi == gssi) {
             return self.reject(req_id, RejectReason::FloorBusy);
         }
@@ -330,7 +358,7 @@ impl DispatcherEntity {
             return;
         };
         let Some(call) = self.calls.get_mut(&call_id) else { return };
-        if !self.monitored.contains(&call.gssi) || call.speaker == 0 {
+        if !(self.monitor_all || self.monitored.contains(&call.gssi)) || call.speaker == 0 {
             return;
         }
         let Some(frame) = acelp_from_umac(&prim.data) else {

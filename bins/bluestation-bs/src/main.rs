@@ -261,7 +261,13 @@ fn build_bs_stack(
     // Restart recovery: when enabled, seed MM from the on-disk cache and start the cold-start
     // re-registration sweep. The cache path is the configured override, else
     // `<config-dir>/recovery_cache.json` (the radioid_cache.json convention).
-    if cfg.config().recovery.enabled {
+    // A station serving a dispatcher must recover its radios after a restart without anyone
+    // pressing PTT first, so `[dispatcher]` implies the proactive sweep.
+    let dispatcher_on = cfg.config().dispatcher.as_ref().is_some_and(|d| d.enabled);
+    if dispatcher_on && !cfg.config().recovery.enabled {
+        eprintln!(" -> [dispatcher] enabled: restart recovery switched on (set [recovery] to tune it)");
+    }
+    if cfg.config().recovery.enabled || dispatcher_on {
         let cache_path = cfg
             .config()
             .recovery
@@ -317,7 +323,9 @@ fn build_bs_stack(
             match tetra_entities::net_dispatcher::new_quic_transport(&dcfg) {
                 Ok(transport) => {
                     let (tap_sink, tap_source) = telemetry_channel();
-                    router.register_entity(Box::new(DispatcherEntity::new(cfg.clone(), transport, Some(tap_source))));
+                    let cmce_commands = c_d.get(&TetraEntity::Cmce).map(|d| d.clone_sender());
+                    let mm_commands = c_d.get(&TetraEntity::Mm).map(|d| d.clone_sender());
+                    router.register_entity(Box::new(DispatcherEntity::new(cfg.clone(), transport, Some(tap_source), cmce_commands, mm_commands)));
                     dispatcher_tap = Some(tap_sink);
                     eprintln!(" -> Dispatcher link enabled (core {}:{})", dcfg.server_host, dcfg.server_port);
                 }

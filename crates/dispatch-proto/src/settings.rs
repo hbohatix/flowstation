@@ -19,7 +19,13 @@ pub struct DispatchSettings {
     /// ISSI radios see as the calling party of dispatcher calls.
     /// `None` = use each node's own configured fallback.
     pub dispatcher_issi: Option<Issi>,
+    /// Network-wide ban list: every node refuses these ISSIs and kicks them if registered.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub banned: Vec<Issi>,
 }
+
+/// Upper bound on the ban list (keeps the settings message small).
+pub const MAX_BANNED: usize = 10_000;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum SettingsError {
@@ -29,6 +35,10 @@ pub enum SettingsError {
     IssiBroadcast,
     #[error("ISSI {0} does not fit in 24 bits (max 16777214)")]
     IssiTooLarge(u32),
+    #[error("the ban list is limited to 10000 ISSIs")]
+    TooManyBanned,
+    #[error("the dispatcher ISSI cannot be banned")]
+    DispatcherBanned,
 }
 
 /// Valid individual SSI for a dispatcher: 1..=16777214.
@@ -43,16 +53,39 @@ pub fn validate_issi(issi: Issi) -> Result<(), SettingsError> {
 
 impl DispatchSettings {
     pub fn validate(&self) -> Result<(), SettingsError> {
-        match self.dispatcher_issi {
-            Some(issi) => validate_issi(issi),
-            None => Ok(()),
+        if let Some(issi) = self.dispatcher_issi {
+            validate_issi(issi)?;
+            if self.banned.contains(&issi) {
+                return Err(SettingsError::DispatcherBanned);
+            }
         }
+        if self.banned.len() > MAX_BANNED {
+            return Err(SettingsError::TooManyBanned);
+        }
+        self.banned.iter().try_for_each(|&i| validate_issi(i))
+    }
+
+    /// Sorted, without duplicates (stable for comparisons and storage).
+    pub fn normalized(mut self) -> Self {
+        self.banned.sort_unstable();
+        self.banned.dedup();
+        self
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ban_rules() {
+        let ok = DispatchSettings { dispatcher_issi: Some(9_000_001), banned: vec![2_601_292] };
+        assert_eq!(ok.validate(), Ok(()));
+        let own = DispatchSettings { dispatcher_issi: Some(9_000_001), banned: vec![9_000_001] };
+        assert_eq!(own.validate(), Err(SettingsError::DispatcherBanned));
+        let bad = DispatchSettings { dispatcher_issi: None, banned: vec![0xFF_FFFF] };
+        assert_eq!(bad.validate(), Err(SettingsError::IssiBroadcast));
+    }
 
     #[test]
     fn issi_rules() {
@@ -66,8 +99,10 @@ mod tests {
 
     #[test]
     fn json_shape() {
-        let s = DispatchSettings { dispatcher_issi: Some(9_000_001) };
+        let s = DispatchSettings { dispatcher_issi: Some(9_000_001), banned: vec![] };
         assert_eq!(serde_json::to_string(&s).unwrap(), r#"{"dispatcher_issi":9000001}"#);
+        let s = DispatchSettings { dispatcher_issi: None, banned: vec![7, 3, 7] }.normalized();
+        assert_eq!(serde_json::to_string(&s).unwrap(), r#"{"dispatcher_issi":null,"banned":[3,7]}"#);
         assert_eq!(serde_json::from_str::<DispatchSettings>("{}").unwrap(), DispatchSettings::default());
     }
 }

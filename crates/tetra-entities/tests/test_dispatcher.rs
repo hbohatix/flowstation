@@ -254,7 +254,7 @@ fn second_request_on_same_group_is_busy() {
 fn uplink_of_monitored_group_is_sent_with_speaker() {
     let mut h = Harness::new(Some(FALLBACK_ISSI), 60);
     h.event(DispatcherEvent::LinkUp);
-    h.event(DispatcherEvent::FromCore(CoreToNode::MonitorSet { gssis: vec![GSSI] }));
+    h.event(DispatcherEvent::FromCore(CoreToNode::MonitorSet { all: false, gssis: vec![GSSI] }));
     h.tick();
     h.rx(
         SapMsgInner::CmceCallControl(CallControl::FloorGranted { call_id: 5, source_issi: 2_603_877, dest_gssi: GSSI, carrier_num: 0, ts: 3 }),

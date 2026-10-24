@@ -720,7 +720,10 @@ impl CcBsSubentity {
             return;
         }
 
-        if !self.has_listener(dest_gssi) {
+        // The dispatcher transmits on its configured groups whatever the station believes about
+        // listeners: after a restart, or before radios report their groups, the table is
+        // incomplete while radios on the group still hear the D-SETUP on the MCCH.
+        if !from_dispatcher && !self.has_listener(dest_gssi) {
             tracing::info!(
                 "CMCE: ignoring network call start uuid={} gssi={} (no listeners)",
                 brew_uuid,
@@ -730,6 +733,27 @@ impl CcBsSubentity {
 
             self.notify_network_call_rejected(queue, brew_uuid, owner, NetworkCallRejectReason::NoListeners);
             return;
+        }
+
+        // A pre-emptive dispatcher call (priority 12..15, e.g. emergency) must not continue a
+        // lower-priority call on the group as a mere speaker change: that call keeps its own
+        // priority on air. Release it and set up a new call (EN 300 392-2 §14.8).
+        if from_dispatcher && is_preemptive_priority(priority) {
+            let lower: Vec<u16> = self
+                .active_calls
+                .iter()
+                .filter(|(_, c)| c.dest_gssi == dest_gssi && c.priority < priority)
+                .map(|(id, _)| *id)
+                .collect();
+            for call_id in lower {
+                tracing::info!(
+                    "CMCE: priority {} dispatcher call on gssi={} releases lower-priority call_id={}",
+                    priority,
+                    dest_gssi,
+                    call_id
+                );
+                self.release_group_call(queue, call_id, DisconnectCause::PreEmptiveUseOfResource);
+            }
         }
 
         // Speaker change for an existing GSSI call
@@ -936,6 +960,8 @@ impl CcBsSubentity {
                 priority,
             ),
         );
+
+        self.notify_dispatcher_network_speaker(queue, owner, call_id, source_issi, dest_gssi, circuit.carrier_num, ts);
 
         // Dashboard telemetry: a Brew/network-initiated group call just became active.
         self.emit(crate::net_telemetry::TelemetryEvent::GroupCallStarted {

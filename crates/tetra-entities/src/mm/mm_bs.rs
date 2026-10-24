@@ -57,12 +57,19 @@ pub struct MmBs {
     /// Monotonic frame index of the last replay batch, so we emit at most `replay_per_frame`
     /// COMMANDs per TDMA frame rather than on every tick.
     recovery_last_frame: Option<i32>,
+    /// Earliest frame for the next COMMAND to each pending ISSI. Retries are spaced so a radio
+    /// that is busy on a traffic channel (and misses MCCH signalling) is still reached after
+    /// its call, instead of every attempt landing inside one call.
+    recovery_next_frame: HashMap<u32, i32>,
     /// Reactive recovery: per-ISSI timestamp of the last D-LOCATION-UPDATE-COMMAND keyed in
     /// response to an *unknown* radio transmitting on the uplink. Rate-limits re-keying the same
     /// ghost while it re-registers (see `maybe_reactive_recovery`). Independent of `recovery`
     /// above â€” populated even when the proactive cache is disabled.
     reactive_recovery_cooldown: HashMap<u32, std::time::Instant>,
 }
+
+/// Spacing between recovery COMMANDs to the same ISSI: one multiframe (18 frames, ~1 s).
+const RECOVERY_RETRY_FRAMES: i32 = 18;
 
 /// Safety cap on `reactive_recovery_cooldown` so a churn of distinct unknown ISSIs can't grow it
 /// without bound; lapsed entries are pruned once this many are held.
@@ -97,6 +104,7 @@ impl MmBs {
             recovery_pending: VecDeque::new(),
             recovery_attempts: HashMap::new(),
             recovery_last_frame: None,
+            recovery_next_frame: HashMap::new(),
             reactive_recovery_cooldown: HashMap::new(),
         }
     }
@@ -185,6 +193,7 @@ impl MmBs {
             return;
         }
         let was_pending = self.recovery_attempts.remove(&issi).is_some();
+        self.recovery_next_frame.remove(&issi);
         self.recovery_pending.retain(|&i| i != issi);
         if was_pending {
             tracing::info!("MM: restart recovery â€” ISSI {} re-registered, stopping replay", issi);
@@ -211,17 +220,30 @@ impl MmBs {
         // twice in one frame: bound the pops to the number of distinct pending entries, so a
         // queue shorter than replay_per_frame doesn't double-send (which would also burn that
         // ISSI's attempt budget faster than configured).
-        let budget = (rec_cfg.replay_per_frame as usize).min(self.recovery_pending.len());
-        let mut processed = 0usize;
-        while processed < budget {
+        let budget = rec_cfg.replay_per_frame as usize;
+        let mut sent = 0usize;
+        // Visit each pending entry at most once per frame; entries not yet due go to the back.
+        for _ in 0..self.recovery_pending.len() {
+            if sent >= budget {
+                break;
+            }
             let Some(issi) = self.recovery_pending.pop_front() else {
                 break;
             };
-            processed += 1;
             // Already confirmed (no longer tracked) â€” drop it from the queue.
             let Some(&attempts) = self.recovery_attempts.get(&issi) else {
+                self.recovery_next_frame.remove(&issi);
                 continue;
             };
+            // Not due yet. The frame counter wraps at the hyperframe, so a "due" further away
+            // than one retry interval means it wrapped: treat it as due.
+            if let Some(&due) = self.recovery_next_frame.get(&issi)
+                && due > frame
+                && due - frame <= RECOVERY_RETRY_FRAMES
+            {
+                self.recovery_pending.push_back(issi);
+                continue;
+            }
             if attempts >= rec_cfg.max_replay_attempts {
                 tracing::info!(
                     "MM: restart recovery â€” giving up on ISSI {} after {} unanswered COMMANDs",
@@ -229,12 +251,15 @@ impl MmBs {
                     attempts
                 );
                 self.recovery_attempts.remove(&issi);
+                self.recovery_next_frame.remove(&issi);
                 continue;
             }
             // handle = 0: addressed by ISSI on the MCCH (see send_d_location_update_command).
             Self::send_d_location_update_command(queue, issi, 0);
             self.recovery_attempts.insert(issi, attempts + 1);
+            self.recovery_next_frame.insert(issi, frame + RECOVERY_RETRY_FRAMES);
             self.recovery_pending.push_back(issi); // round-robin until it answers or we give up
+            sent += 1;
         }
     }
 
@@ -284,6 +309,10 @@ impl MmBs {
             return;
         }
 
+        // Banned or not whitelisted (including the live overrides): never key it.
+        if !self.issi_allowed(issi) {
+            return;
+        }
         let cfg = self.config.config();
         let rec = &cfg.recovery;
         if !rec.reactive_enabled {
@@ -293,6 +322,18 @@ impl MmBs {
         // the access-control whitelist plus the optional recovery allowlist.
         let permitted = cfg.security.is_issi_allowed(issi) && (rec.issi_allowlist.is_empty() || rec.issi_allowlist.contains(&issi));
         if !permitted {
+            return;
+        }
+        // With restart recovery running, hand the radio to the paced retry queue: one COMMAND
+        // can be missed (e.g. the radio is on a traffic channel), so keep asking until it answers.
+        if self.recovery.is_some() {
+            tracing::info!(
+                "MM: reactive recovery - unknown ISSI {} active on uplink, commanding re-registration until it answers",
+                issi
+            );
+            self.recovery_attempts.insert(issi, 0);
+            self.recovery_next_frame.remove(&issi);
+            self.recovery_pending.push_back(issi);
             return;
         }
         let cooldown = std::time::Duration::from_secs(rec.reactive_cooldown_secs);
@@ -368,7 +409,7 @@ impl MmBs {
     /// empty list means "open network" or "deny all".
     fn issi_allowed(&self, issi: u32) -> bool {
         let state = self.config.state_read();
-        self.config.config().security.allows(issi, state.issi_whitelist_override.as_deref())
+        state.issi_banlist.binary_search(&issi).is_err() && self.config.config().security.allows(issi, state.issi_whitelist_override.as_deref())
     }
 
     /// May an unauthenticated teardown (U-ITSI-DETACH, or the migrating-location-update release)
@@ -2083,6 +2124,10 @@ impl TetraEntityTrait for MmBs {
                         attach,
                     } => {
                         self.do_dgna(queue, issi, gssi, mnemonic, attachment_mode, attach);
+                    }
+                    ControlCommand::ReRegister { issi } => {
+                        tracing::info!("MM: re-registration of ISSI {} requested by the operator", issi);
+                        Self::send_d_location_update_command(queue, issi, 0);
                     }
                     _ => {
                         tracing::warn!("MM: ignoring unsupported control command {:?}", cmd);

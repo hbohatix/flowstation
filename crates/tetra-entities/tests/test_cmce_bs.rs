@@ -2775,16 +2775,22 @@ fn test_dispatcher_call_refused_on_group_outside_its_list() {
 }
 
 #[test]
-fn test_dispatcher_call_refused_without_listeners() {
+fn test_dispatcher_call_goes_on_air_without_known_listeners() {
+    // After a station restart the listener table is empty while radios on the group still
+    // listen: the dispatcher must be able to transmit anyway.
     let uuid = uuid::Uuid::new_v4();
     let mut test = dispatcher_test(false);
     test.submit_message(dispatcher_call_start(uuid, DISPATCH_GSSI, 0));
     test.run_stack(Some(1));
     let msgs = test.dump_sinks();
-    assert_eq!(
-        dispatcher_rejection(&msgs, uuid),
-        Some(tetra_saps::control::call_control::NetworkCallRejectReason::NoListeners)
+    assert_eq!(dispatcher_rejection(&msgs, uuid), None);
+    assert!(
+        msgs.iter().any(|m| m.dest == TetraEntity::Dispatcher
+            && matches!(&m.msg, SapMsgInner::CmceCallControl(CallControl::NetworkCallReady { brew_uuid, .. }) if *brew_uuid == uuid)),
+        "the call is set up"
     );
+    assert!(find_lcmc_req(&msgs, DISPATCH_GSSI, CmcePduTypeDl::DSetup).is_some(), "D-SETUP goes on air");
+    assert_eq!(to_brew(&msgs), 0);
 }
 
 #[test]
@@ -2832,4 +2838,98 @@ fn test_brew_network_call_unchanged_with_dispatcher_enabled() {
         && matches!(&m.msg, SapMsgInner::CmceCallControl(CallControl::NetworkCallReady { brew_uuid, .. }) if *brew_uuid == uuid)));
     let (mut sdu, _) = find_lcmc_req(&msgs, brew_gssi, CmcePduTypeDl::DSetup).expect("group D-SETUP");
     assert_eq!(DSetup::from_bitbuf(&mut sdu).unwrap().call_priority, 0);
+}
+
+#[test]
+fn test_dispatcher_emergency_in_hangtime_starts_new_emergency_call() {
+    // A dispatcher emergency PTT while an ordinary call on the group is in hangtime must not be
+    // a speaker change (the call would stay priority 0 on air): the old call is released and a
+    // new one is set up with priority 15 (EN 300 392-2 §14.8, table 14.46).
+    let radio = 2_603_877;
+    let normal = uuid::Uuid::parse_str("0b5c0a0e-0000-4000-8000-0000000000a1").unwrap();
+    let emergency = uuid::Uuid::parse_str("0b5c0a0e-0000-4000-8000-0000000000a2").unwrap();
+    let mut test = dispatcher_test(false);
+    register_subscriber(&mut test, radio, DISPATCH_GSSI);
+
+    let ready = |msgs: &[SapMsg], uuid: uuid::Uuid| {
+        msgs.iter().find_map(|m| match &m.msg {
+            SapMsgInner::CmceCallControl(CallControl::NetworkCallReady { brew_uuid, call_id, .. })
+                if m.dest == TetraEntity::Dispatcher && *brew_uuid == uuid =>
+            {
+                Some(*call_id)
+            }
+            _ => None,
+        })
+    };
+
+    test.submit_message(dispatcher_call_start(normal, DISPATCH_GSSI, 0));
+    test.run_stack(Some(1));
+    let first = ready(&test.dump_sinks(), normal).expect("ordinary call set up");
+
+    test.submit_message(SapMsg {
+        sap: Sap::Control,
+        src: TetraEntity::Dispatcher,
+        dest: TetraEntity::Cmce,
+        msg: SapMsgInner::CmceCallControl(CallControl::NetworkCallEnd { brew_uuid: normal }),
+    });
+    test.run_stack(Some(1));
+    test.dump_sinks();
+
+    test.submit_message(dispatcher_call_start(emergency, DISPATCH_GSSI, 15));
+    test.run_stack(Some(1));
+    let msgs = test.dump_sinks();
+    assert!(find_lcmc_req(&msgs, DISPATCH_GSSI, CmcePduTypeDl::DRelease).is_some(), "the ordinary call is released");
+    let second = ready(&msgs, emergency).expect("emergency call set up");
+    assert_ne!(first, second, "a new call, not a speaker change");
+    // Every D-SETUP on the group: the old call's late-entry repeats may still be in the queue.
+    let setups: Vec<DSetup> = msgs
+        .iter()
+        .filter_map(|m| match &m.msg {
+            SapMsgInner::LcmcMleUnitdataReq(prim)
+                if m.dest == TetraEntity::Mle
+                    && prim.main_address.ssi == DISPATCH_GSSI
+                    && dl_pdu_type(&prim.sdu) == Some(CmcePduTypeDl::DSetup) =>
+            {
+                let mut sdu = prim.sdu.clone();
+                DSetup::from_bitbuf(&mut sdu).ok()
+            }
+            _ => None,
+        })
+        .collect();
+    let new_setup = setups.iter().find(|d| d.call_identifier == second).unwrap_or_else(|| {
+        panic!("no D-SETUP for the new call {second}; D-SETUPs: {:?}", setups.iter().map(|d| (d.call_identifier, d.call_priority)).collect::<Vec<_>>())
+    });
+    assert_eq!(new_setup.call_priority, 15, "the emergency call carries priority 15 on air");
+}
+
+#[test]
+fn test_dispatcher_hears_network_speakers() {
+    // A Brew call on an ordinary (Brew-routable) group: the dispatcher link is told who speaks
+    // on which slot, so it can monitor and record it. Receive only: nothing goes to Brew from it.
+    let radio = 2_603_877;
+    let remote_speaker = 2_609_999;
+    let brew_gssi = 92;
+    let uuid = uuid::Uuid::new_v4();
+    let mut test = dispatcher_test(false);
+    register_subscriber(&mut test, radio, brew_gssi);
+    test.dump_sinks();
+    test.submit_message(SapMsg {
+        sap: Sap::Control,
+        src: TetraEntity::Brew,
+        dest: TetraEntity::Cmce,
+        msg: SapMsgInner::CmceCallControl(CallControl::NetworkCallStart {
+            brew_uuid: uuid,
+            source_issi: remote_speaker,
+            dest_gssi: brew_gssi,
+            priority: 0,
+        }),
+    });
+    test.run_stack(Some(1));
+    let msgs = test.dump_sinks();
+    assert!(
+        msgs.iter().any(|m| m.dest == TetraEntity::Dispatcher
+            && matches!(&m.msg, SapMsgInner::CmceCallControl(CallControl::FloorGranted { source_issi, dest_gssi, .. })
+                if *source_issi == remote_speaker && *dest_gssi == brew_gssi)),
+        "the dispatcher must learn the network speaker"
+    );
 }

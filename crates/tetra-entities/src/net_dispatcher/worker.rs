@@ -5,14 +5,22 @@
 //!   messages / uplink voice to the core;
 //! - turns telemetry (registrations, groups, calls, emergencies) into `NodeToCore` state events;
 //! - applies the dispatcher ISSI setting (refusing an ISSI held by a registered radio);
+//! - executes console commands (DGNA, SDS, kick, re-register, position request) through the
+//!   control channels, like the dashboard;
+//! - enforces the platform ban list and reports the station's status every 10 s;
 //! - heartbeats both ways; a silent link is torn down and re-established with backoff.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, TrySendError};
-use dispatch_proto::{CallPriority, CoreToNode, Issi, NodeToCore, PROTOCOL_VERSION, VoiceDatagram, settings::validate_issi};
+use dispatch_proto::{
+    CallPriority, CarrierInfo, CoreToNode, Gssi, Issi, NodeStatus, NodeToCore, PROTOCOL_VERSION, RadioAction, VoiceDatagram,
+    settings::validate_issi,
+};
+use tetra_config::bluestation::SharedConfig;
 
+use crate::net_control::ControlCommand;
 use crate::net_telemetry::{TelemetryEvent, TelemetrySource};
 use crate::network::transports::NetworkTransport;
 
@@ -25,6 +33,17 @@ const BACKOFF_MIN: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
 /// Upper bound on items handled per loop iteration from each internal queue.
 const MAX_PER_ITERATION: usize = 256;
+/// RSSI of one radio is reported to the core at most this often.
+const RSSI_INTERVAL: Duration = Duration::from_secs(5);
+/// Station status report interval.
+const STATUS_INTERVAL: Duration = Duration::from_secs(10);
+
+/// LIP IMMEDIATE LOCATION REPORT REQUEST (TS 100 392-18-1 §6.2.16) as an SDS type-4 SDU:
+/// protocol identifier 10, then PDU type `01` (long), extension `0001` (immediate location
+/// report request), request/response `0`, report type `01` (long report, time elapsed) =
+/// 9 bits `010001001`.
+pub const LIP_IMMEDIATE_REQUEST: [u8; 3] = [0x0A, 0b0100_0100, 0b1000_0000];
+pub const LIP_IMMEDIATE_REQUEST_BITS: u16 = 8 + 9;
 
 /// Entity → worker.
 #[derive(Debug)]
@@ -59,6 +78,8 @@ pub struct WorkerConfig {
     pub fallback_issi: Option<Issi>,
     pub dispatch_gssis: Vec<u32>,
     pub link_timeout: Duration,
+    /// SS-DGNA attachment mode for console DGNA (`cell_info.dgna_attachment_mode`, table 16.51).
+    pub dgna_attachment_mode: u8,
 }
 
 /// Outcome of applying a requested dispatcher ISSI.
@@ -113,6 +134,27 @@ pub fn telemetry_to_core(event: &TelemetryEvent) -> Option<NodeToCore> {
         }
         TelemetryEvent::EmergencyAlarm { source_issi, dest_ssi } => NodeToCore::Emergency { issi: *source_issi, gssi: *dest_ssi },
         TelemetryEvent::EmergencyCancel { source_issi } => NodeToCore::EmergencyCleared { issi: *source_issi },
+        TelemetryEvent::MsPosition { issi, position } => NodeToCore::MsPosition {
+            issi: *issi,
+            lat: position.lat,
+            lon: position.lon,
+            accuracy_m: position.position_error_m.or(position.horizontal_uncertainty_m),
+            speed_kmh: position.speed_kmh,
+            heading_deg: position.heading_deg,
+        },
+        TelemetryEvent::DgnaStatus(info) => NodeToCore::DgnaStatus {
+            issi: info.issi,
+            gssi: info.gssi,
+            attach: info.attach,
+            accepted: info.accepted,
+            detail: info.detail.clone(),
+        },
+        TelemetryEvent::SdsLog { source_issi, dest_issi, is_group, text, .. } if !text.is_empty() => NodeToCore::SdsReceived {
+            source_issi: *source_issi,
+            dest_ssi: *dest_issi,
+            is_group: *is_group,
+            text: text.clone(),
+        },
         _ => return None,
     })
 }
@@ -123,8 +165,23 @@ pub struct DispatcherWorker<T: NetworkTransport> {
     events: Sender<DispatcherEvent>,
     commands: Receiver<DispatcherCommand>,
     telemetry: Option<TelemetrySource>,
+    /// CMCE control channel (DGNA, SDS, kick), the same one the dashboard uses.
+    cmce: Option<Sender<ControlCommand>>,
+    /// MM control channel (re-registration).
+    mm: Option<Sender<ControlCommand>>,
+    /// Station config/state: ban list, status report. `None` in unit tests.
+    station: Option<SharedConfig>,
+    /// Network-wide ban list from the platform (sorted).
+    banned: Vec<Issi>,
+    /// Group calls in progress (for the status report).
+    active_calls: HashSet<u16>,
+    started_at: Instant,
     connected: bool,
     registered: HashSet<Issi>,
+    /// Last known groups and position per registered radio, replayed in state snapshots.
+    groups: HashMap<Issi, Vec<Gssi>>,
+    positions: HashMap<Issi, NodeToCore>,
+    rssi_sent: HashMap<Issi, Instant>,
     /// Last dispatcher ISSI requested by the core (None = use fallback).
     requested_issi: Option<Issi>,
     effective_issi: Option<Issi>,
@@ -138,6 +195,7 @@ impl<T: NetworkTransport> DispatcherWorker<T> {
         events: Sender<DispatcherEvent>,
         commands: Receiver<DispatcherCommand>,
         telemetry: Option<TelemetrySource>,
+        cmce: Option<Sender<ControlCommand>>,
     ) -> Self {
         let effective_issi = cfg.fallback_issi;
         Self {
@@ -146,12 +204,33 @@ impl<T: NetworkTransport> DispatcherWorker<T> {
             events,
             commands,
             telemetry,
+            cmce,
             connected: false,
             registered: HashSet::new(),
+            groups: HashMap::new(),
+            positions: HashMap::new(),
+            mm: None,
+            station: None,
+            banned: Vec::new(),
+            active_calls: HashSet::new(),
+            started_at: Instant::now(),
+            rssi_sent: HashMap::new(),
             requested_issi: None,
             effective_issi,
             hb_seq: 0,
         }
+    }
+
+    /// Give the worker the station's config/state (ban list, status report).
+    pub fn with_station(mut self, station: SharedConfig) -> Self {
+        self.station = Some(station);
+        self
+    }
+
+    /// The MM control channel (operator re-registration requests).
+    pub fn with_mm(mut self, mm: Option<Sender<ControlCommand>>) -> Self {
+        self.mm = mm;
+        self
     }
 
     fn emit(&self, event: DispatcherEvent) {
@@ -256,6 +335,23 @@ impl<T: NetworkTransport> DispatcherWorker<T> {
             }
             TelemetryEvent::MsDeregistration { issi } | TelemetryEvent::MsTimeoutDrop { issi } => {
                 self.registered.remove(issi);
+                self.groups.remove(issi);
+                self.positions.remove(issi);
+                self.rssi_sent.remove(issi);
+            }
+            TelemetryEvent::MsGroupsSnapshot { issi, gssis } => {
+                self.groups.insert(*issi, gssis.clone());
+            }
+            TelemetryEvent::GroupCallStarted { call_id, .. } => {
+                self.active_calls.insert(*call_id);
+            }
+            TelemetryEvent::GroupCallEnded { call_id, .. } => {
+                self.active_calls.remove(call_id);
+            }
+            TelemetryEvent::MsPosition { issi, .. } => {
+                if let Some(msg) = telemetry_to_core(event) {
+                    self.positions.insert(*issi, msg);
+                }
             }
             _ => {}
         }
@@ -294,7 +390,35 @@ impl<T: NetworkTransport> DispatcherWorker<T> {
     }
 
     /// One connected session. Returns why it ended.
+    /// The full subscriber state, so a core or console that starts late sees every radio.
+    fn state_snapshot(&self) -> Vec<NodeToCore> {
+        let mut issis: Vec<Issi> = self.registered.iter().copied().collect();
+        issis.sort_unstable();
+        let mut out = Vec::new();
+        for issi in issis {
+            out.push(NodeToCore::MsRegistered { issi });
+            if let Some(gssis) = self.groups.get(&issi) {
+                out.push(NodeToCore::MsGroups { issi, gssis: gssis.clone() });
+            }
+            if let Some(pos) = self.positions.get(&issi) {
+                out.push(pos.clone());
+            }
+        }
+        out
+    }
+
+    fn send_snapshot(&mut self) -> bool {
+        let snapshot = self.state_snapshot();
+        tracing::info!("Dispatcher: sending state of {} registered radio(s)", self.registered.len());
+        snapshot.iter().all(|m| self.send(m))
+    }
+
     fn session(&mut self) -> SessionEnd {
+        // Radios that registered before this session (or while the link was down).
+        if !self.send_snapshot() || !self.send_status() {
+            return SessionEnd::Lost("send failed".into());
+        }
+        let mut last_status = Instant::now();
         let mut last_rx = Instant::now();
         let mut last_hb = Instant::now().checked_sub(HEARTBEAT_INTERVAL).unwrap_or_else(Instant::now);
         loop {
@@ -303,9 +427,21 @@ impl<T: NetworkTransport> DispatcherWorker<T> {
                 last_rx = Instant::now();
                 match dispatch_proto::decode::<CoreToNode>(&msg.payload) {
                     Ok(CoreToNode::Heartbeat { .. }) | Ok(CoreToNode::HelloAck { .. }) => {}
-                    Ok(CoreToNode::Settings { dispatcher_issi }) => {
+                    Ok(CoreToNode::Settings { dispatcher_issi, banned }) => {
                         self.requested_issi = dispatcher_issi;
+                        self.apply_bans(banned);
                         if !self.reapply_settings(true) {
+                            return SessionEnd::Lost("send failed".into());
+                        }
+                    }
+                    Ok(CoreToNode::ResyncState) => {
+                        if !self.send_snapshot() || !self.reapply_settings(true) {
+                            return SessionEnd::Lost("send failed".into());
+                        }
+                    }
+                    Ok(cmd @ (CoreToNode::Dgna { .. } | CoreToNode::SendSds { .. } | CoreToNode::RadioCommand { .. })) => {
+                        let result = self.run_console_command(cmd);
+                        if !self.send(&result) {
                             return SessionEnd::Lost("send failed".into());
                         }
                     }
@@ -345,6 +481,12 @@ impl<T: NetworkTransport> DispatcherWorker<T> {
             if let Some(end) = self.forward_telemetry() {
                 return end;
             }
+            if last_status.elapsed() >= STATUS_INTERVAL {
+                if !self.send_status() {
+                    return SessionEnd::Lost("status send failed".into());
+                }
+                last_status = Instant::now();
+            }
             // Heartbeat and liveness.
             if last_hb.elapsed() >= HEARTBEAT_INTERVAL {
                 self.hb_seq = self.hb_seq.wrapping_add(1);
@@ -370,6 +512,16 @@ impl<T: NetworkTransport> DispatcherWorker<T> {
         }
         for ev in batch {
             self.track_registration(&ev);
+            if let TelemetryEvent::MsRssi { issi, rssi_dbfs } = ev {
+                let due = self.rssi_sent.get(&issi).is_none_or(|t| t.elapsed() >= RSSI_INTERVAL);
+                if due {
+                    self.rssi_sent.insert(issi, Instant::now());
+                    if !self.send(&NodeToCore::MsRssi { issi, rssi_dbfs }) {
+                        return Some(SessionEnd::Lost("send failed".into()));
+                    }
+                }
+                continue;
+            }
             // A radio registering with the dispatcher's ISSI makes that ISSI unusable.
             if matches!(ev, TelemetryEvent::MsRegistration { issi } if Some(issi) == self.effective_issi)
                 && !self.reapply_settings(true)
@@ -385,6 +537,121 @@ impl<T: NetworkTransport> DispatcherWorker<T> {
         None
     }
 
+    /// DGNA / SDS from the console, executed through the CMCE control channel.
+    fn run_console_command(&mut self, cmd: CoreToNode) -> NodeToCore {
+        let (req_id, control) = match cmd {
+            CoreToNode::Dgna { req_id, issi, gssi, attach, mnemonic } => (
+                req_id,
+                Ok(ControlCommand::Dgna { issi, gssi, mnemonic, attachment_mode: self.cfg.dgna_attachment_mode, attach }),
+            ),
+            CoreToNode::SendSds { req_id, dest_ssi, dest_is_group, text } => {
+                let built = match (self.effective_issi, dispatch_proto::sds::encode_text(&text)) {
+                    (None, _) => Err("no dispatcher ISSI to send from".to_string()),
+                    (_, Err(e)) => Err(e.to_string()),
+                    (Some(source_ssi), Ok(payload)) => Ok(ControlCommand::SendSds {
+                        handle: req_id,
+                        source_ssi,
+                        dest_ssi,
+                        dest_is_group,
+                        len_bits: (payload.len() * 8) as u16,
+                        payload,
+                    }),
+                };
+                (req_id, built)
+            }
+            CoreToNode::RadioCommand { req_id, issi, action } => {
+                tracing::info!("Dispatcher: console {:?} on ISSI {}", action, issi);
+                let built = match action {
+                    RadioAction::Kick => Ok(ControlCommand::KickMs { issi }),
+                    RadioAction::ReRegister => Ok(ControlCommand::ReRegister { issi }),
+                    RadioAction::RequestPosition => match self.effective_issi {
+                        None => Err("no dispatcher ISSI to send from".to_string()),
+                        Some(source_ssi) => Ok(ControlCommand::SendRawSdsType4 {
+                            handle: req_id,
+                            source_ssi,
+                            dest_ssi: issi,
+                            dest_is_group: false,
+                            len_bits: LIP_IMMEDIATE_REQUEST_BITS,
+                            payload: LIP_IMMEDIATE_REQUEST.to_vec(),
+                        }),
+                    },
+                };
+                (req_id, built)
+            }
+            _ => return NodeToCore::CommandResult { req_id: 0, ok: false, detail: Some("not a console command".into()) },
+        };
+        let outcome = control.and_then(|control| {
+            // Registration is Mobility Management; everything else goes through CMCE.
+            let (channel, name) = match control {
+                ControlCommand::ReRegister { .. } => (&self.mm, "MM"),
+                _ => (&self.cmce, "CMCE"),
+            };
+            match channel {
+                Some(tx) => tx.send(control).map_err(|_| format!("{name} control channel closed")),
+                None => Err(format!("{name} control channel not available")),
+            }
+        });
+        match outcome {
+            Ok(()) => NodeToCore::CommandResult { req_id, ok: true, detail: None },
+            Err(detail) => {
+                tracing::warn!("Dispatcher: console command {} refused: {}", req_id, detail);
+                NodeToCore::CommandResult { req_id, ok: false, detail: Some(detail) }
+            }
+        }
+    }
+
+    /// Take over the platform's ban list: store it for MM's access check and kick every banned
+    /// radio that is registered right now.
+    fn apply_bans(&mut self, mut banned: Vec<Issi>) {
+        banned.sort_unstable();
+        banned.dedup();
+        if banned == self.banned {
+            return;
+        }
+        if let Some(station) = &self.station {
+            station.state_write().issi_banlist = banned.clone();
+        }
+        let to_kick: Vec<Issi> = self.registered.iter().copied().filter(|i| banned.binary_search(i).is_ok()).collect();
+        tracing::info!("Dispatcher: {} ISSI(s) banned by the platform, kicking {} registered", banned.len(), to_kick.len());
+        for issi in to_kick {
+            if let Some(tx) = &self.cmce {
+                let _ = tx.send(ControlCommand::KickMs { issi });
+            }
+        }
+        self.banned = banned;
+    }
+
+    fn node_status(&self) -> NodeStatus {
+        let mut status = NodeStatus {
+            uptime_s: self.started_at.elapsed().as_secs(),
+            carriers: Vec::new(),
+            mcc: 0,
+            mnc: 0,
+            location_area: 0,
+            registered: self.registered.len() as u32,
+            active_calls: self.active_calls.len() as u32,
+            timeslots_total: 0,
+            cpu_temp_c: cpu_temperature(),
+        };
+        if let Some(station) = &self.station {
+            let cfg = station.config();
+            status.mcc = cfg.net.mcc;
+            status.mnc = cfg.net.mnc;
+            status.location_area = cfg.cell.location_area;
+            if let Ok(carriers) = cfg.bs_phase_mod_carriers() {
+                // Four timeslots per carrier; timeslot 1 of the main carrier is the MCCH.
+                status.timeslots_total = (carriers.len() as u32 * 4).saturating_sub(1);
+                status.carriers = carriers.into_iter().map(|(number, dl, ul)| CarrierInfo { number, dl_hz: dl.into(), ul_hz: ul.into() }).collect();
+            }
+        }
+        status
+    }
+
+    fn send_status(&mut self) -> bool {
+        let status = self.node_status();
+        self.send(&NodeToCore::NodeStatus(status))
+    }
+
     /// Recompute the effective ISSI, tell the entity, optionally report to the core.
     fn reapply_settings(&mut self, report: bool) -> bool {
         let applied = apply_dispatcher_issi(self.requested_issi, self.cfg.fallback_issi, &self.registered);
@@ -397,10 +664,20 @@ impl<T: NetworkTransport> DispatcherWorker<T> {
         self.effective_issi = applied.effective;
         self.emit(DispatcherEvent::DispatcherIssi(applied.effective));
         if report {
-            return self.send(&NodeToCore::SettingsApplied { dispatcher_issi: applied.effective, error: applied.error });
+            return self.send(&NodeToCore::SettingsApplied {
+                dispatcher_issi: applied.effective,
+                error: applied.error,
+                banned: self.banned.len() as u32,
+            });
         }
         true
     }
+}
+
+/// SoC temperature in °C (Raspberry Pi and most Linux boards), if readable.
+fn cpu_temperature() -> Option<f32> {
+    let raw = std::fs::read_to_string("/sys/class/thermal/thermal_zone0/temp").ok()?;
+    raw.trim().parse::<f32>().ok().map(|milli| milli / 1000.0)
 }
 
 enum SessionEnd {
@@ -524,9 +801,11 @@ mod tests {
             fallback_issi: Some(9_000_001),
             dispatch_gssis: vec![91],
             link_timeout: Duration::from_secs(30),
+            dgna_attachment_mode: 0,
         };
+        let (cmce_tx, cmce_rx) = crossbeam_channel::unbounded();
         let fake = transport.clone();
-        let handle = std::thread::spawn(move || DispatcherWorker::new(cfg, fake, event_tx, cmd_rx, Some(tsource)).run());
+        let handle = std::thread::spawn(move || DispatcherWorker::new(cfg, fake, event_tx, cmd_rx, Some(tsource), Some(cmce_tx)).run());
 
         // Hello first, then the link is up.
         wait_until("Hello", || matches!(transport.sent().first(), Some(NodeToCore::Hello { node_id, dispatch_gssis, .. }) if node_id == "gdansk-01" && *dispatch_gssis == vec![91]));
@@ -535,18 +814,79 @@ mod tests {
         // A radio registers, then the console asks for that radio's ISSI: refused, fallback kept.
         tsink.send(TelemetryEvent::MsRegistration { issi: 2_603_877 });
         wait_until("MsRegistered", || transport.sent().contains(&NodeToCore::MsRegistered { issi: 2_603_877 }));
-        transport.push(&CoreToNode::Settings { dispatcher_issi: Some(2_603_877) });
+        transport.push(&CoreToNode::Settings { dispatcher_issi: Some(2_603_877), banned: vec![] });
         wait_until("SettingsApplied", || {
-            transport.sent().iter().any(|m| matches!(m, NodeToCore::SettingsApplied { dispatcher_issi: Some(9_000_001), error: Some(_) }))
+            transport.sent().iter().any(|m| matches!(m, NodeToCore::SettingsApplied { dispatcher_issi: Some(9_000_001), error: Some(_), .. }))
         });
         assert_eq!(event_rx.recv_timeout(Duration::from_secs(3)).unwrap(), DispatcherEvent::DispatcherIssi(Some(9_000_001)));
 
         // Commands for the entity are relayed.
-        transport.push(&CoreToNode::MonitorSet { gssis: vec![91] });
+        transport.push(&CoreToNode::MonitorSet { all: false, gssis: vec![91] });
         assert_eq!(
             event_rx.recv_timeout(Duration::from_secs(3)).unwrap(),
-            DispatcherEvent::FromCore(CoreToNode::MonitorSet { gssis: vec![91] })
+            DispatcherEvent::FromCore(CoreToNode::MonitorSet { all: false, gssis: vec![91] })
         );
+
+        // Console commands go to the CMCE control channel and are acknowledged to the core.
+        transport.push(&CoreToNode::Dgna { req_id: 21, issi: 2_603_877, gssi: 401, attach: true, mnemonic: None });
+        match cmce_rx.recv_timeout(Duration::from_secs(3)).unwrap() {
+            ControlCommand::Dgna { issi: 2_603_877, gssi: 401, attach: true, .. } => {}
+            other => panic!("unexpected {other:?}"),
+        }
+        transport.push(&CoreToNode::SendSds { req_id: 22, dest_ssi: 10, dest_is_group: true, text: "\u{141}\u{f3}d\u{17a}".into() });
+        match cmce_rx.recv_timeout(Duration::from_secs(3)).unwrap() {
+            ControlCommand::SendSds { source_ssi: 9_000_001, dest_ssi: 10, dest_is_group: true, payload, len_bits, .. } => {
+                assert_eq!(payload[0], 0x02, "UTF-16BE for non-Latin-1 text");
+                assert_eq!(usize::from(len_bits), payload.len() * 8);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        wait_until("command results", || {
+            let sent = transport.sent();
+            sent.contains(&NodeToCore::CommandResult { req_id: 21, ok: true, detail: None })
+                && sent.contains(&NodeToCore::CommandResult { req_id: 22, ok: true, detail: None })
+        });
+
+        // Operator radio commands: kick → CMCE, position request → raw LIP SDS from the
+        // dispatcher ISSI; re-register needs MM, which this test does not wire → refused.
+        transport.push(&CoreToNode::RadioCommand { req_id: 31, issi: 2_603_877, action: RadioAction::Kick });
+        assert!(matches!(cmce_rx.recv_timeout(Duration::from_secs(3)).unwrap(), ControlCommand::KickMs { issi: 2_603_877 }));
+        transport.push(&CoreToNode::RadioCommand { req_id: 32, issi: 2_603_877, action: RadioAction::RequestPosition });
+        match cmce_rx.recv_timeout(Duration::from_secs(3)).unwrap() {
+            ControlCommand::SendRawSdsType4 { dest_ssi: 2_603_877, dest_is_group: false, len_bits: 17, payload, source_ssi: 9_000_001, .. } => {
+                assert_eq!(payload, vec![0x0A, 0x44, 0x80], "LIP immediate location report request");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        transport.push(&CoreToNode::RadioCommand { req_id: 33, issi: 2_603_877, action: RadioAction::ReRegister });
+        wait_until("radio command results", || {
+            let sent = transport.sent();
+            sent.contains(&NodeToCore::CommandResult { req_id: 31, ok: true, detail: None })
+                && sent.contains(&NodeToCore::CommandResult { req_id: 32, ok: true, detail: None })
+                && sent.iter().any(|m| matches!(m, NodeToCore::CommandResult { req_id: 33, ok: false, .. }))
+        });
+
+        // A ban on a registered radio kicks it and is reported back.
+        transport.push(&CoreToNode::Settings { dispatcher_issi: None, banned: vec![2_603_877] });
+        assert!(matches!(cmce_rx.recv_timeout(Duration::from_secs(3)).unwrap(), ControlCommand::KickMs { issi: 2_603_877 }));
+        wait_until("SettingsApplied with ban", || {
+            transport.sent().iter().any(|m| matches!(m, NodeToCore::SettingsApplied { banned: 1, .. }))
+        });
+
+        // Status report right after Hello.
+        assert!(transport.sent().iter().any(|m| matches!(m, NodeToCore::NodeStatus(s) if s.registered == 0)), "status sent after Hello");
+
+        // A resync replays the radio with its groups, then the settings.
+        tsink.send(TelemetryEvent::MsGroupsSnapshot { issi: 2_603_877, gssis: vec![91, 401] });
+        wait_until("MsGroups", || transport.sent().contains(&NodeToCore::MsGroups { issi: 2_603_877, gssis: vec![91, 401] }));
+        let before = transport.sent().len();
+        transport.push(&CoreToNode::ResyncState);
+        wait_until("resync", || {
+            let after = transport.sent()[before..].to_vec();
+            after.contains(&NodeToCore::MsRegistered { issi: 2_603_877 })
+                && after.contains(&NodeToCore::MsGroups { issi: 2_603_877, gssis: vec![91, 401] })
+                && after.iter().any(|m| matches!(m, NodeToCore::SettingsApplied { .. }))
+        });
 
         cmd_tx.send(DispatcherCommand::Shutdown).unwrap();
         handle.join().unwrap();
@@ -565,9 +905,10 @@ mod tests {
             fallback_issi: None,
             dispatch_gssis: vec![91],
             link_timeout: Duration::from_secs(30),
+            dgna_attachment_mode: 0,
         };
         let fake = transport.clone();
-        let handle = std::thread::spawn(move || DispatcherWorker::new(cfg, fake, event_tx, cmd_rx, None).run());
+        let handle = std::thread::spawn(move || DispatcherWorker::new(cfg, fake, event_tx, cmd_rx, None, None).run());
         std::thread::sleep(Duration::from_millis(300));
         assert!(event_rx.try_recv().is_err(), "a refused node must not report LinkUp");
         cmd_tx.send(DispatcherCommand::Shutdown).unwrap();

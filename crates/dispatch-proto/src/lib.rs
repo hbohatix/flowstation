@@ -1,5 +1,5 @@
-//! COPY of hbohatix/flowstation-platform `crates/proto` @ 17d184c — do not edit here; change the
-//! protocol in flowstation-platform and re-copy so both sides stay byte-compatible.
+//! COPY of hbohatix/flowstation-platform `crates/proto` (protocol v1) — do not edit here; change
+//! the protocol in flowstation-platform and re-copy so both sides stay byte-compatible.
 //!
 //! Wire protocol `flowstation-dispatch-v0`.
 //!
@@ -17,6 +17,7 @@ pub mod bus;
 mod codec;
 pub mod framing;
 mod priority;
+pub mod sds;
 pub mod settings;
 mod voice;
 
@@ -29,7 +30,7 @@ use bitcode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 
 /// Protocol version carried in [`NodeToCore::Hello`]. Bump on any incompatible change.
-pub const PROTOCOL_VERSION: u16 = 0;
+pub const PROTOCOL_VERSION: u16 = 2;
 
 /// ALPN identifier for the QUIC node link.
 pub const ALPN: &[u8] = b"flowstation-dispatch-v0";
@@ -79,6 +80,44 @@ pub enum StopReason {
     CallReleased,
 }
 
+/// What a console operator asks a node to do with one radio (protocol v2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RadioAction {
+    /// Force deregistration (the radio has to register again).
+    Kick,
+    /// D-LOCATION UPDATE COMMAND with group report request (EN 300 392-2 §16.4).
+    ReRegister,
+    /// LIP IMMEDIATE LOCATION REPORT REQUEST (TS 100 392-18-1 §6.2.16).
+    RequestPosition,
+}
+
+/// One carrier of a base station.
+#[derive(Debug, Clone, PartialEq, Encode, Decode, Serialize, Deserialize)]
+pub struct CarrierInfo {
+    pub number: u16,
+    pub dl_hz: u64,
+    pub ul_hz: u64,
+}
+
+/// Periodic health and load report of a node (protocol v2).
+#[derive(Debug, Clone, PartialEq, Encode, Decode, Serialize, Deserialize)]
+pub struct NodeStatus {
+    /// Seconds since the station process started.
+    pub uptime_s: u64,
+    pub carriers: Vec<CarrierInfo>,
+    pub mcc: u16,
+    pub mnc: u16,
+    pub location_area: u16,
+    /// Radios registered on this station right now.
+    pub registered: u32,
+    /// Group calls in progress.
+    pub active_calls: u32,
+    /// Traffic timeslots the station can use.
+    pub timeslots_total: u32,
+    pub cpu_temp_c: Option<f32>,
+}
+
 /// Messages a FlowStation node sends to the core on the reliable stream.
 #[derive(Debug, Clone, PartialEq, Encode, Decode, Serialize, Deserialize)]
 pub enum NodeToCore {
@@ -108,7 +147,29 @@ pub enum NodeToCore {
     EmergencyCleared { issi: Issi },
     /// Reply to [`CoreToNode::Settings`]: the dispatcher ISSI the node now uses, or why it
     /// refused the new value (e.g. a registered radio already has that ISSI).
-    SettingsApplied { dispatcher_issi: Option<Issi>, error: Option<String> },
+    /// `banned` = how many ISSIs of the ban list the node enforces (v2).
+    SettingsApplied { dispatcher_issi: Option<Issi>, error: Option<String>, banned: u32 },
+    // ----- v1 -----
+    /// Answer to [`CoreToNode::Dgna`] / [`CoreToNode::SendSds`]: accepted for sending or refused.
+    CommandResult { req_id: ReqId, ok: bool, detail: Option<String> },
+    /// SS-DGNA outcome reported by the radio / MM (EN 300 392-12-22).
+    DgnaStatus { issi: Issi, gssi: Gssi, attach: bool, accepted: bool, detail: String },
+    /// A text SDS seen on the cell (uplink from a radio, or sent by the node).
+    SdsReceived { source_issi: Issi, dest_ssi: u32, is_group: bool, text: String },
+    /// Decoded LIP position (TS 100 392-18-1).
+    MsPosition {
+        issi: Issi,
+        lat: f64,
+        lon: f64,
+        accuracy_m: Option<f32>,
+        speed_kmh: Option<f32>,
+        heading_deg: Option<f32>,
+    },
+    /// Uplink signal level of a radio, rate-limited by the node.
+    MsRssi { issi: Issi, rssi_dbfs: f32 },
+    // ----- v2 -----
+    /// Sent after Hello and every 10 s.
+    NodeStatus(NodeStatus),
 }
 
 /// Messages the core sends to a node on the reliable stream.
@@ -120,12 +181,25 @@ pub enum CoreToNode {
     GroupTxRequest { req_id: ReqId, gssi: Gssi, priority: CallPriority },
     /// Dispatcher released PTT: the call goes to hangtime so radios can answer.
     GroupTxStop { call_id: CallId },
-    /// Groups whose uplink voice the node should send as [`VoiceDatagram::Ul`].
-    MonitorSet { gssis: Vec<Gssi> },
+    /// Groups whose voice the node should send as [`VoiceDatagram::Ul`]; `all` (v2) = every
+    /// group call on the cell, local and network (Brew) speakers alike. Receive only.
+    MonitorSet { all: bool, gssis: Vec<Gssi> },
     /// Platform settings. Sent right after [`CoreToNode::HelloAck`] and whenever they change.
     /// `dispatcher_issi: None` = use the node's own fallback. The node answers
     /// [`NodeToCore::SettingsApplied`]. A change takes effect for the next dispatcher call.
-    Settings { dispatcher_issi: Option<Issi> },
+    /// `banned` (v2): network-wide ban list; the node refuses these ISSIs and kicks them.
+    Settings { dispatcher_issi: Option<Issi>, banned: Vec<Issi> },
+    // ----- v1 -----
+    /// Assign (`attach`) or remove a group on a registered radio (SS-DGNA, EN 300 392-12-22).
+    Dgna { req_id: ReqId, issi: Issi, gssi: Gssi, attach: bool, mnemonic: Option<String> },
+    /// Send a text SDS (SDS-TL simple text, EN 300 392-2 §29.5.3) from the dispatcher ISSI.
+    SendSds { req_id: ReqId, dest_ssi: u32, dest_is_group: bool, text: String },
+    /// Send the full current state again: `MsRegistered` + `MsGroups` (+ last `MsPosition`)
+    /// for every registered radio, and `SettingsApplied`. Nodes also do this after every Hello.
+    ResyncState,
+    // ----- v2 -----
+    /// Operator action on one radio, answered with [`NodeToCore::CommandResult`].
+    RadioCommand { req_id: ReqId, issi: Issi, action: RadioAction },
 }
 
 #[cfg(test)]
@@ -148,7 +222,20 @@ mod tests {
             dispatcher_issi: Some(9_000_001),
             dispatch_gssis: vec![91, 401],
         });
-        roundtrip(NodeToCore::SettingsApplied { dispatcher_issi: None, error: Some("ISSI in use".into()) });
+        roundtrip(NodeToCore::SettingsApplied { dispatcher_issi: None, error: Some("ISSI in use".into()), banned: 2 });
+        roundtrip(NodeToCore::NodeStatus(NodeStatus {
+            uptime_s: 3600,
+            carriers: vec![CarrierInfo { number: 1529, dl_hz: 438_225_000, ul_hz: 430_625_000 }],
+            mcc: 260,
+            mnc: 99,
+            location_area: 1,
+            registered: 4,
+            active_calls: 1,
+            timeslots_total: 3,
+            cpu_temp_c: Some(51.5),
+        }));
+        roundtrip(NodeToCore::MsPosition { issi: 7, lat: 54.352, lon: 18.646, accuracy_m: Some(10.0), speed_kmh: None, heading_deg: Some(90.0) });
+        roundtrip(NodeToCore::CommandResult { req_id: 4, ok: false, detail: Some("radio not registered".into()) });
         roundtrip(NodeToCore::GroupTxRejected { req_id: 7, reason: RejectReason::BrewRoutable });
         roundtrip(NodeToCore::GroupCallStarted {
             call_id: 218,
@@ -166,8 +253,12 @@ mod tests {
             gssi: 401,
             priority: CallPriority::new(11).unwrap(),
         });
-        roundtrip(CoreToNode::MonitorSet { gssis: vec![20, 91] });
-        roundtrip(CoreToNode::Settings { dispatcher_issi: Some(9_000_001) });
+        roundtrip(CoreToNode::MonitorSet { all: false, gssis: vec![20, 91] });
+        roundtrip(CoreToNode::Settings { dispatcher_issi: Some(9_000_001), banned: vec![2_601_292] });
+        roundtrip(CoreToNode::RadioCommand { req_id: 5, issi: 2_601_292, action: RadioAction::RequestPosition });
+        roundtrip(CoreToNode::Dgna { req_id: 3, issi: 2_603_877, gssi: 401, attach: true, mnemonic: Some("FIRE 1".into()) });
+        roundtrip(CoreToNode::SendSds { req_id: 4, dest_ssi: 10, dest_is_group: true, text: "Zażółć gęślą jaźń / Привіт".into() });
+        roundtrip(CoreToNode::ResyncState);
         roundtrip(CoreToNode::HelloAck { protocol_version: 0, accepted: false, reason: Some("bad token".into()) });
     }
 

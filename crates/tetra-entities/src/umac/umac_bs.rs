@@ -1643,6 +1643,21 @@ impl UmacBs {
                 // transmitting. The timer only tracks locally-owned uplink, which is armed by
                 // CallControl::FloorGranted and refreshed by TmdCircuitDataInd (real UL frames).
                 if self.scheduler_for(carrier_num).circuit_is_active(Direction::Dl, ts) {
+                    // Network speakers (Brew, SIP) are heard only in the downlink: copy their voice
+                    // to the dispatcher link for monitoring/recording. Not the dispatcher's own
+                    // transmission (that would echo), and nothing is sent anywhere else.
+                    if src != TetraEntity::Dispatcher && crate::net_dispatcher::routing::is_enabled(&self.config) {
+                        queue.push_back(SapMsg {
+                            sap: Sap::TmdSap,
+                            src: TetraEntity::Umac,
+                            dest: TetraEntity::Dispatcher,
+                            msg: SapMsgInner::TmdCircuitDataInd(tetra_saps::tmd::TmdCircuitDataInd {
+                                carrier_num,
+                                ts,
+                                data: prim.data.clone(),
+                            }),
+                        });
+                    }
                     self.scheduler_for_mut(carrier_num).dl_schedule_tmd(ts, prim.data);
                 } else {
                     tracing::warn!(

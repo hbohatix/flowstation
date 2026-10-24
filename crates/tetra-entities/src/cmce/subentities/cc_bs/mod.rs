@@ -52,7 +52,7 @@ mod state;
 mod timers;
 
 use lifecycle::{BrewNotification, CallTimeslot, GroupFloorGrant};
-use pdu::is_emergency_priority;
+use pdu::{is_emergency_priority, is_preemptive_priority};
 use procedures::{GroupTransitionError, IndividualTransitionError};
 use state::{
     ActiveCall, CachedSetup, CallOrigin, CcFormalEvent, CcFormalState, GroupCallState, IndividualCall, IndividualCallState,

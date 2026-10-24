@@ -514,6 +514,9 @@ pub struct StackState {
     /// fall back to the config value". The dashboard also writes the new list back to the
     /// TOML so it survives a restart.
     pub issi_whitelist_override: Option<Vec<u32>>,
+    /// Network-wide ban list pushed by the dispatcher platform (sorted). A banned ISSI may not
+    /// register or attach groups, whatever the whitelist says.
+    pub issi_banlist: Vec<u32>,
     /// Runtime override for the WX/METAR service (dashboard toggle). See WxRuntimeOverride.
     pub wx_override: Option<WxRuntimeOverride>,
     /// Runtime override for Telegram alerts (dashboard editing). See TelegramRuntimeOverride.
@@ -705,6 +708,7 @@ impl Default for StackState {
             live_sds_queue: VecDeque::new(),
             next_live_sds_id: 1,
             issi_whitelist_override: None,
+            issi_banlist: Vec::new(),
             wx_override: None,
             telegram_override: None,
             dapnet_override: None,

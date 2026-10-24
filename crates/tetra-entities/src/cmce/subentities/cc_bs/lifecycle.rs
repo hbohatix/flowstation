@@ -106,6 +106,28 @@ impl CcBsSubentity {
         }
     }
 
+    /// A network-originated group call (Brew, SIP) got a speaker: tell the dispatcher link so it
+    /// can monitor and record it like a local call. Never for the dispatcher's own calls.
+    pub(in crate::cmce::subentities::cc_bs) fn notify_dispatcher_network_speaker(
+        &self,
+        queue: &mut MessageQueue,
+        owner: TetraEntity,
+        call_id: u16,
+        source_issi: u32,
+        dest_gssi: u32,
+        carrier_num: u16,
+        ts: u8,
+    ) {
+        if owner == TetraEntity::Dispatcher || !dispatch::is_enabled(&self.config) {
+            return;
+        }
+        Self::push_control(
+            queue,
+            TetraEntity::Dispatcher,
+            CallControl::FloorGranted { call_id, source_issi, dest_gssi, carrier_num, ts },
+        );
+    }
+
     pub(super) fn notify_remote_floor_granted(&self, queue: &mut MessageQueue, slot: CallTimeslot) {
         Self::push_control(
             queue,

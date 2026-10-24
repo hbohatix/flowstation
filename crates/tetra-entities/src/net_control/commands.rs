@@ -34,6 +34,10 @@ pub enum ControlCommand {
     /// Forcibly deregister a terminal from the BS
     KickMs { issi: u32 },
 
+    /// Ask a terminal to register again with a group report (D-LOCATION UPDATE COMMAND,
+    /// EN 300 392-2 §16.4). Handled by MM.
+    ReRegister { issi: u32 },
+
     /// Dynamic Group Number Assignment (SS-DGNA, ETSI EN 300 392-2 §16).
     ///
     /// BS-initiated: attach (or detach) a single GSSI on an already-registered

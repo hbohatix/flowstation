@@ -388,6 +388,8 @@ impl CcBsSubentity {
             .active_calls
             .iter()
             .filter(|(_, call)| call.dest_gssi == gssi)
+            // A dispatcher call stays up when the last known listener leaves (see the start check).
+            .filter(|(_, call)| !matches!(call.origin, CallOrigin::Network { owner: TetraEntity::Dispatcher, .. }))
             .map(|(call_id, call)| (*call_id, call.origin.clone()))
             .collect();
 

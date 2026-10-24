@@ -6,6 +6,7 @@
 //! | `fs.node.<node>.cmd` | JSON [`Envelope`] of [`CoreToNode`](crate::CoreToNode) | services → core → node |
 //! | `fs.voice.<node>.<call_id>` | bitcode [`VoiceDatagram::Ul`](crate::VoiceDatagram) | core → services |
 //! | `fs.voicedl.<node>.<call_id>` | bitcode [`VoiceDatagram::Dl`](crate::VoiceDatagram) | services → core → node |
+//! | `fs.core.nodes` | request/reply: JSON list of [`Envelope`] of [`CoreEvent::NodeOnline`] | services → core |
 
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +16,8 @@ pub const ALL_NODE_EVENTS: &str = "fs.node.*.events";
 pub const ALL_NODE_COMMANDS: &str = "fs.node.*.cmd";
 pub const ALL_VOICE: &str = "fs.voice.>";
 pub const ALL_VOICE_DL: &str = "fs.voicedl.>";
+/// Request/reply: the core answers with the nodes connected right now (for services that start late).
+pub const CORE_NODES: &str = "fs.core.nodes";
 
 pub fn node_events(node_id: &str) -> String {
     format!("fs.node.{}.events", token(node_id))

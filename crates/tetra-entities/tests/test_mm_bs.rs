@@ -1217,3 +1217,54 @@ fn test_restart_recovery_honours_whitelist() {
 
     let _ = std::fs::remove_file(&path);
 }
+
+
+/// With restart recovery running (always the case on a dispatcher station), a ghost radio is not
+/// asked just once: the COMMAND is repeated about once a second until it re-registers, because a
+/// radio busy on a traffic channel misses MCCH signalling. Once it registers, the COMMANDs stop.
+#[test]
+fn test_reactive_recovery_retries_until_registered() {
+    const GHOST_ISSI: u32 = 2261111;
+    let mut config = ComponentTest::get_default_test_config(StackMode::Bs);
+    config.recovery.enabled = true;
+    let path = std::env::temp_dir().join("fs_recovery_it_reactive_retry.json");
+    let _ = std::fs::remove_file(&path);
+
+    let mut test = ComponentTest::from_config(config, Some(TdmaTime::default()));
+    test.populate_entities(vec![], vec![TetraEntity::Mle]);
+    let mut mm = MmBs::new(test.get_shared_config(), None, None);
+    mm.init_recovery(path.clone());
+    test.register_entity(mm);
+
+    let count = |msgs: &[SapMsg]| {
+        let want = MmPduTypeDl::DLocationUpdateCommand.into_raw();
+        msgs.iter()
+            .filter(|m| match &m.msg {
+                SapMsgInner::LmmMleUnitdataReq(req) => {
+                    let mut sdu = BitBuffer::from_bitstr(&req.sdu.to_bitstr());
+                    req.address.ssi == GHOST_ISSI && sdu.read_field(4, "pdu_type").is_ok_and(|t| t == want)
+                }
+                _ => false,
+            })
+            .count()
+    };
+
+    submit_uplink_rssi(&mut test, GHOST_ISSI);
+    test.run_stack(Some(8));
+    assert_eq!(count(&test.dump_sinks()), 1, "first COMMAND right away");
+
+    // Within the retry interval (18 frames = 72 slots) nothing more...
+    test.run_stack(Some(40));
+    assert_eq!(count(&test.dump_sinks()), 0, "retries are paced, not one per frame");
+
+    // ...then it asks again, because the radio did not answer.
+    test.run_stack(Some(40));
+    assert_eq!(count(&test.dump_sinks()), 1, "unanswered: ask again after ~1 s");
+
+    // The radio re-registers: no further COMMANDs.
+    register_terminal(&mut test, GHOST_ISSI);
+    let _ = test.dump_sinks();
+    test.run_stack(Some(160));
+    assert_eq!(count(&test.dump_sinks()), 0, "registered: retries stop");
+    let _ = std::fs::remove_file(&path);
+}

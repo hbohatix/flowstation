@@ -326,6 +326,7 @@ impl CcBsSubentity {
         self.send_d_tx_granted_facch(queue, call_id, source_issi, dest_gssi, carrier_num, ts);
 
         self.notify_remote_floor_granted(queue, CallTimeslot { call_id, carrier_num, ts });
+        self.notify_dispatcher_network_speaker(queue, owner, call_id, source_issi, dest_gssi, carrier_num, ts);
 
         queue.push_back(SapMsg {
             sap: Sap::Control,
