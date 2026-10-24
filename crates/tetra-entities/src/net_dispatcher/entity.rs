@@ -37,8 +37,10 @@ const COMMAND_QUEUE: usize = 4096;
 const MEDIA_ACTIVITY_REFRESH_TS: i32 = 72;
 /// A request CMCE never answered is dropped after this long (~5 s).
 const SETUP_ANSWER_TIMEOUT_TS: i32 = 5 * 71;
-/// Leftover playout after a stop is reaped after this long (~5 s).
-const DRAIN_REAP_TS: i32 = 5 * 71;
+/// After PTT release, buffered voice is played out before the call enters hangtime (UMAC sends
+/// no traffic in hangtime, so frames still buffered then would be lost — the clipped ending).
+/// This caps how long that tail may take (~2 s).
+const STOP_DRAIN_MAX_TS: i32 = 2 * 71;
 /// TDMA frame 18 is the control frame: no traffic.
 const CONTROL_FRAME: u8 = 18;
 
@@ -56,13 +58,8 @@ struct TxSession {
     started: TdmaTime,
     last_activity_signal: Option<TdmaTime>,
     jitter: VoiceJitterBuffer,
-}
-
-struct Draining {
-    carrier: u16,
-    ts: u8,
-    jitter: VoiceJitterBuffer,
-    since: TdmaTime,
+    /// PTT released at this time; the session ends once its buffer is played out.
+    stop_requested: Option<TdmaTime>,
 }
 
 struct KnownCall {
@@ -80,7 +77,6 @@ pub struct DispatcherEntity {
     dispatcher_issi: Option<u32>,
     monitored: HashSet<u32>,
     tx: HashMap<Uuid, TxSession>,
-    draining: Vec<Draining>,
     /// Group calls seen via FloorGranted, for routing uplink voice: call_id → state.
     calls: HashMap<u16, KnownCall>,
     calls_by_slot: HashMap<(u16, u8), u16>,
@@ -126,7 +122,6 @@ impl DispatcherEntity {
             dispatcher_issi: fallback,
             monitored: HashSet::new(),
             tx: HashMap::new(),
-            draining: Vec::new(),
             calls: HashMap::new(),
             calls_by_slot: HashMap::new(),
             max_tx_ts: seconds_to_ts(max_tx),
@@ -209,6 +204,7 @@ impl DispatcherEntity {
                 started: self.dltime,
                 last_activity_signal: None,
                 jitter: VoiceJitterBuffer::with_initial_latency(0),
+                stop_requested: None,
             },
         );
         tracing::info!("Dispatcher: TX request {} on gssi={} prio={} as ISSI {}", req_id, gssi, priority.value(), issi);
@@ -218,27 +214,42 @@ impl DispatcherEntity {
         );
     }
 
-    /// End the dispatcher's transmission on `call_id`. The call goes to hangtime in CMCE, so
-    /// radios can answer. Buffered frames still play out.
+    /// The dispatcher released PTT (`Requested`) or the node cuts the transmission
+    /// (watchdog, link loss). A release first plays out what is still buffered, then the call
+    /// goes to hangtime so radios can answer; a cut ends at once.
     fn stop_tx(&mut self, queue: &mut MessageQueue, call_id: u16, reason: StopReason) {
         let Some(uuid) = self.tx.iter().find(|(_, s)| s.call_id == Some(call_id)).map(|(u, _)| *u) else {
             return;
         };
-        let session = self.tx.remove(&uuid).expect("session just found");
-        Self::to_cmce(queue, CallControl::NetworkCallEnd { brew_uuid: uuid });
-        if let (Some(carrier), Some(ts)) = (session.carrier, session.ts)
-            && !session.jitter.is_empty()
-        {
-            self.draining.push(Draining { carrier, ts, jitter: session.jitter, since: self.dltime });
+        if reason == StopReason::Requested {
+            let session = self.tx.get_mut(&uuid).expect("session just found");
+            if !session.jitter.is_empty() && session.ts.is_some() {
+                if session.stop_requested.is_none() {
+                    session.stop_requested = Some(self.dltime);
+                    tracing::debug!("Dispatcher: PTT released on call_id={}, playing out {} buffered frames", call_id, session.jitter.len());
+                }
+                return;
+            }
         }
+        self.finish_tx(queue, uuid, reason);
+    }
+
+    /// End a session now: CMCE puts the call into hangtime.
+    fn finish_tx(&mut self, queue: &mut MessageQueue, uuid: Uuid, reason: StopReason) {
+        let Some(session) = self.tx.remove(&uuid) else { return };
+        Self::to_cmce(queue, CallControl::NetworkCallEnd { brew_uuid: uuid });
+        let dropped = session.jitter.len();
         tracing::info!(
-            "Dispatcher: TX on gssi={} call_id={} ended ({:?}) after {} slots",
+            "Dispatcher: TX on gssi={} call_id={:?} ended ({:?}) after {} slots{}",
             session.gssi,
-            call_id,
+            session.call_id,
             reason,
-            session.started.age(self.dltime)
+            session.started.age(self.dltime),
+            if dropped > 0 { format!(", {dropped} buffered frames dropped") } else { String::new() }
         );
-        if reason != StopReason::Requested {
+        if reason != StopReason::Requested
+            && let Some(call_id) = session.call_id
+        {
             self.to_core(NodeToCore::TxForcedStop { call_id, reason });
         }
     }
@@ -247,7 +258,7 @@ impl DispatcherEntity {
         let sessions: Vec<(Uuid, Option<u16>)> = self.tx.iter().map(|(u, s)| (*u, s.call_id)).collect();
         for (uuid, call_id) in sessions {
             match call_id {
-                Some(call_id) => self.stop_tx(queue, call_id, reason),
+                Some(_) => self.finish_tx(queue, uuid, reason),
                 None => {
                     // Not set up yet: tell CMCE anyway so no call is left behind.
                     self.tx.remove(&uuid);
@@ -366,12 +377,25 @@ impl DispatcherEntity {
         let now = self.dltime;
         let mut out: Vec<(u16, u8, Vec<u8>)> = Vec::new();
         let mut activity: Vec<Uuid> = Vec::new();
+        let mut finished: Vec<Uuid> = Vec::new();
         for (uuid, session) in self.tx.iter_mut() {
             let (Some(carrier), Some(ts)) = (session.carrier, session.ts) else { continue };
             if ts != now.t {
                 continue;
             }
-            if let Some(frame) = session.jitter.pop_ready() {
+            let frame = match session.stop_requested {
+                // Releasing: play everything left without waiting for the jitter target.
+                // The call ends one frame after the last block, so UMAC has sent it.
+                Some(since) => {
+                    let frame = session.jitter.pop_drain();
+                    if frame.is_none() || since.age(now) > STOP_DRAIN_MAX_TS {
+                        finished.push(*uuid);
+                    }
+                    frame
+                }
+                None => session.jitter.pop_ready(),
+            };
+            if let Some(frame) = frame {
                 out.push((carrier, ts, frame.acelp_data));
                 if session.last_activity_signal.is_none_or(|t| t.age(now) >= MEDIA_ACTIVITY_REFRESH_TS) {
                     session.last_activity_signal = Some(now);
@@ -379,21 +403,6 @@ impl DispatcherEntity {
                 }
             }
         }
-        self.draining.retain_mut(|d| {
-            if d.since.age(now) > DRAIN_REAP_TS {
-                return false;
-            }
-            if d.ts != now.t {
-                return true;
-            }
-            match d.jitter.pop_drain() {
-                Some(frame) => {
-                    out.push((d.carrier, d.ts, frame.acelp_data));
-                    true
-                }
-                None => false,
-            }
-        });
         for uuid in activity {
             Self::to_cmce(queue, CallControl::NetworkCallMediaActivity { brew_uuid: uuid });
         }
@@ -404,6 +413,9 @@ impl DispatcherEntity {
                 dest: TetraEntity::Umac,
                 msg: SapMsgInner::TmdCircuitDataReq(TmdCircuitDataReq { carrier_num, ts, data }),
             });
+        }
+        for uuid in finished {
+            self.finish_tx(queue, uuid, StopReason::Requested);
         }
     }
 

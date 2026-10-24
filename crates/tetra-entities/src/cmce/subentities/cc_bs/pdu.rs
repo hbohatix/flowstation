@@ -943,13 +943,13 @@ impl CcBsSubentity {
 
         // Clean up
         self.cached_setups.remove(&call_id);
-        let was_active = self.active_calls.remove(&call_id).is_some();
+        let removed = self.active_calls.remove(&call_id);
 
         // Dashboard telemetry: group call released (normal disconnect, timeout, hangtime or
         // pre-emption — all of which funnel through here). Only emit if a call was actually
         // removed, so a double-release can't produce a phantom Ended.
-        if was_active {
-            self.emit(crate::net_telemetry::TelemetryEvent::GroupCallEnded { call_id, gssi: 0 });
+        if let Some(call) = removed {
+            self.emit(crate::net_telemetry::TelemetryEvent::GroupCallEnded { call_id, gssi: call.dest_gssi });
         }
     }
 

@@ -280,3 +280,50 @@ fn uplink_of_unmonitored_group_is_not_sent() {
     h.rx(SapMsgInner::TmdCircuitDataInd(TmdCircuitDataInd { carrier_num: 0, ts: 3, data: vec![1; 35] }), TetraEntity::Umac);
     assert!(h.voice_to_core().is_empty());
 }
+
+#[test]
+fn ptt_release_plays_out_the_buffer_before_hangtime() {
+    // UMAC sends no traffic in hangtime: ending the call while frames are still buffered would
+    // clip the end of the dispatcher's sentence. Release must play them out first.
+    let mut h = Harness::new(Some(FALLBACK_ISSI), 60);
+    let uuid = h.request_tx(1, 0);
+    h.ready(uuid, 42, 2);
+    for seq in 0..8 {
+        h.event(DispatcherEvent::VoiceDl(VoiceDatagram::Dl { call_id: 42, seq, frame: AcelpFrame([seq as u8 + 1; 35]) }));
+    }
+    // Release right away, before the jitter buffer even started playing.
+    h.event(DispatcherEvent::FromCore(CoreToNode::GroupTxStop { call_id: 42 }));
+    let mut played = Vec::new();
+    let mut ended_after = None;
+    for _ in 0..(4 * 18 * 2) {
+        h.tick();
+        for m in h.drain_queue() {
+            match &m.msg {
+                SapMsgInner::TmdCircuitDataReq(req) => {
+                    assert!(ended_after.is_none(), "no voice after the call went to hangtime");
+                    played.push(req.data[0]);
+                }
+                SapMsgInner::CmceCallControl(CallControl::NetworkCallEnd { brew_uuid }) if *brew_uuid == uuid => {
+                    ended_after = Some(played.len());
+                }
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(played, (1..=8).collect::<Vec<u8>>(), "every buffered frame reaches the air, in order");
+    assert_eq!(ended_after, Some(8), "the call ends only after the last frame");
+    assert!(!h.sent_to_core().iter().any(|m| matches!(m, NodeToCore::TxForcedStop { .. })));
+}
+
+#[test]
+fn link_loss_does_not_wait_for_the_buffer() {
+    let mut h = Harness::new(Some(FALLBACK_ISSI), 60);
+    let uuid = h.request_tx(1, 0);
+    h.ready(uuid, 42, 2);
+    for seq in 0..8 {
+        h.event(DispatcherEvent::VoiceDl(VoiceDatagram::Dl { call_id: 42, seq, frame: AcelpFrame([1; 35]) }));
+    }
+    h.event(DispatcherEvent::LinkDown);
+    h.tick();
+    assert!(ends_call(&h.drain_queue(), uuid), "a dead console ends the transmission at once");
+}

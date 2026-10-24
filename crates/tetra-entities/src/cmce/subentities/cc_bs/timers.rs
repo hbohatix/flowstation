@@ -219,7 +219,7 @@ impl CcBsSubentity {
                             call.begin_release(disconnect_cause);
                         }
                         self.cached_setups.remove(&call_id);
-                        let removed_group = self.active_calls.remove(&call_id).is_some();
+                        let removed_group = self.active_calls.remove(&call_id).map(|call| call.dest_gssi);
                         let removed_individual = self.individual_calls.remove(&call_id).is_some();
 
                         // Signal UMAC to release the circuit
@@ -230,8 +230,8 @@ impl CcBsSubentity {
                         // call down directly here without going through release_group_call /
                         // release_individual_call, so emit the matching CallEnded for whichever
                         // table the call was removed from above.
-                        if removed_group {
-                            self.emit(crate::net_telemetry::TelemetryEvent::GroupCallEnded { call_id, gssi: 0 });
+                        if let Some(gssi) = removed_group {
+                            self.emit(crate::net_telemetry::TelemetryEvent::GroupCallEnded { call_id, gssi });
                         }
                         if removed_individual {
                             self.emit(crate::net_telemetry::TelemetryEvent::IndividualCallEnded { call_id });
