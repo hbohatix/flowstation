@@ -28,6 +28,7 @@ pub fn default_test_config_bs() -> StackConfig {
         snom_notify: CfgSnomNotify::default(),
         dashboard: None,
         telemetry: None,
+        dispatcher: None,
         control: None,
         security: CfgSecurity::default(),
         wx_service: CfgWxService::default(),

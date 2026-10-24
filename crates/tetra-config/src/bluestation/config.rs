@@ -10,6 +10,7 @@ use crate::bluestation::{
 use super::sec_brew::CfgBrew;
 use super::sec_dashboard::CfgDashboard;
 use super::sec_telegram::CfgTelegram;
+use super::sec_dispatcher::CfgDispatcher;
 use super::sec_telemetry::CfgTelemetry;
 
 /// Wrapper for a string that should be treated as a secret. Display and Debug will redact the actual value,
@@ -95,6 +96,9 @@ pub struct StackConfig {
 
     /// Telemetry endpoint configuration
     pub telemetry: Option<CfgTelemetry>,
+
+    /// Link to the flowstation-platform core (dispatcher console). None = disabled.
+    pub dispatcher: Option<CfgDispatcher>,
 
     /// Control endpoint configuration
     pub control: Option<CfgControl>,

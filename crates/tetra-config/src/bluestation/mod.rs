@@ -40,6 +40,9 @@ pub use sec_dashboard::*;
 pub mod sec_telemetry;
 pub use sec_telemetry::*;
 
+pub mod sec_dispatcher;
+pub use sec_dispatcher::*;
+
 pub mod sec_control;
 pub use sec_control::*;
 

@@ -29,4 +29,7 @@ pub enum TetraEntity {
 
     /// Asterisk SIP/RTP bridge
     Asterisk,
+
+    /// Dispatcher link to the flowstation-platform core. Local-only: never forwards to Brew.
+    Dispatcher,
 }

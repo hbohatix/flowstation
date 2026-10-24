@@ -60,9 +60,43 @@ impl QuicTransportConfig {
     }
 }
 
+/// ALPN this transport has always sent. Kept as the default so existing servers keep working.
+pub const DEFAULT_ALPN: &[u8] = b"hq-29";
+
+/// How long a non-blocking receive waits for data before returning nothing.
+const RECEIVE_POLL: Duration = Duration::from_millis(10);
+
+/// Which server certificates the client accepts.
+#[derive(Clone, Debug, Default)]
+pub enum QuicTrust {
+    /// The operating system's root store (default; e.g. a Let's Encrypt certificate).
+    #[default]
+    System,
+    /// Only these certificates (PEM). Used to pin a self-signed server, such as the
+    /// flowstation-platform core's generated `core-cert.pem`.
+    PinnedPem(Vec<u8>),
+}
+
+/// Optional client settings for [`QuicTransport::with_options`].
+#[derive(Clone, Debug)]
+pub struct QuicClientOptions {
+    pub alpn: Vec<Vec<u8>>,
+    pub trust: QuicTrust,
+    /// TLS server name (SNI + certificate check). Defaults to the host part of the address.
+    pub server_name: Option<String>,
+}
+
+impl Default for QuicClientOptions {
+    fn default() -> Self {
+        Self { alpn: vec![DEFAULT_ALPN.to_vec()], trust: QuicTrust::System, server_name: None }
+    }
+}
+
 /// QUIC-based network transport
 /// Provides both reliable signalling and unreliable voice channels
 pub struct QuicTransport {
+    /// TLS server name used on connect.
+    server_name: String,
     endpoint: Option<Endpoint>,
     connection: Option<Connection>,
     server_addr: NetworkAddress,
@@ -95,7 +129,34 @@ impl QuicTransport {
         skip_cert_verification: bool,
         runtime: tokio::runtime::Runtime,
     ) -> Result<Self, NetworkError> {
+        Self::build(server_addr, connect_timeout, skip_cert_verification, QuicClientOptions::default(), runtime)
+    }
+
+    /// Like [`QuicTransport::new`], with ALPN, certificate pinning and TLS server name.
+    pub fn with_options(
+        server_addr: NetworkAddress,
+        connect_timeout: Duration,
+        options: QuicClientOptions,
+        runtime: tokio::runtime::Runtime,
+    ) -> Result<Self, NetworkError> {
+        Self::build(server_addr, connect_timeout, false, options, runtime)
+    }
+
+    fn build(
+        server_addr: NetworkAddress,
+        connect_timeout: Duration,
+        skip_cert_verification: bool,
+        options: QuicClientOptions,
+        runtime: tokio::runtime::Runtime,
+    ) -> Result<Self, NetworkError> {
         let socket_addr = Self::parse_socket_addr(&server_addr)?;
+        let server_name = match (&options.server_name, &server_addr) {
+            (Some(name), _) => name.clone(),
+            (None, NetworkAddress::Tcp { host, .. } | NetworkAddress::Udp { host, .. }) => host.clone(),
+            (None, NetworkAddress::Custom { .. }) => {
+                return Err(NetworkError::ConnectionFailed("Custom addresses not supported for QUIC".to_string()));
+            }
+        };
 
         // Create endpoint within the runtime context
         let endpoint = runtime.block_on(async {
@@ -103,7 +164,7 @@ impl QuicTransport {
             let crypto = if skip_cert_verification {
                 Self::configure_insecure_client()
             } else {
-                Self::configure_client()
+                Self::configure_client(&options)
             }?;
 
             let mut client_config = quinn::ClientConfig::new(Arc::new(crypto));
@@ -129,6 +190,7 @@ impl QuicTransport {
         })?;
 
         Ok(Self {
+            server_name,
             endpoint: Some(endpoint),
             connection: None,
             server_addr,
@@ -142,12 +204,20 @@ impl QuicTransport {
         })
     }
 
-    /// Parse NetworkAddress to SocketAddr
+    /// Parse NetworkAddress to SocketAddr. IP literals parse directly; host names are resolved.
     fn parse_socket_addr(addr: &NetworkAddress) -> Result<SocketAddr, NetworkError> {
         match addr {
-            NetworkAddress::Tcp { host, port } | NetworkAddress::Udp { host, port } => format!("{}:{}", host, port)
-                .parse()
-                .map_err(|e| NetworkError::ConnectionFailed(format!("Invalid address: {}", e))),
+            NetworkAddress::Tcp { host, port } | NetworkAddress::Udp { host, port } => {
+                if let Ok(sa) = format!("{}:{}", host, port).parse() {
+                    return Ok(sa);
+                }
+                use std::net::ToSocketAddrs;
+                (host.as_str(), *port)
+                    .to_socket_addrs()
+                    .map_err(|e| NetworkError::ConnectionFailed(format!("Invalid address {host}: {e}")))?
+                    .next()
+                    .ok_or_else(|| NetworkError::ConnectionFailed(format!("No address for {host}")))
+            }
             NetworkAddress::Custom { .. } => Err(NetworkError::ConnectionFailed(
                 "Custom addresses not supported for QUIC".to_string(),
             )),
@@ -155,22 +225,36 @@ impl QuicTransport {
     }
 
     /// Configure client with certificate verification (production)
-    fn configure_client() -> Result<quinn::crypto::rustls::QuicClientConfig, NetworkError> {
+    fn configure_client(options: &QuicClientOptions) -> Result<quinn::crypto::rustls::QuicClientConfig, NetworkError> {
         let mut roots = rustls::RootCertStore::empty();
 
-        // Add system certificates
-        for cert in rustls_native_certs::load_native_certs()
-            .map_err(|e| NetworkError::ConnectionFailed(format!("Failed to load native certs: {}", e)))?
-        {
-            roots
-                .add(cert)
-                .map_err(|e| NetworkError::ConnectionFailed(format!("Failed to add cert: {}", e)))?;
+        match &options.trust {
+            QuicTrust::System => {
+                for cert in rustls_native_certs::load_native_certs()
+                    .map_err(|e| NetworkError::ConnectionFailed(format!("Failed to load native certs: {}", e)))?
+                {
+                    roots
+                        .add(cert)
+                        .map_err(|e| NetworkError::ConnectionFailed(format!("Failed to add cert: {}", e)))?;
+                }
+            }
+            QuicTrust::PinnedPem(pem) => {
+                for cert in rustls_pemfile::certs(&mut pem.as_slice()) {
+                    let cert = cert.map_err(|e| NetworkError::ConnectionFailed(format!("Bad pinned certificate: {}", e)))?;
+                    roots
+                        .add(cert)
+                        .map_err(|e| NetworkError::ConnectionFailed(format!("Failed to add pinned cert: {}", e)))?;
+                }
+                if roots.is_empty() {
+                    return Err(NetworkError::ConnectionFailed("Pinned certificate file contains no certificate".to_string()));
+                }
+            }
         }
 
         let mut crypto = rustls::ClientConfig::builder().with_root_certificates(roots).with_no_client_auth();
 
         // Set ALPN protocol for QUIC
-        crypto.alpn_protocols = vec![b"hq-29".to_vec()];
+        crypto.alpn_protocols = options.alpn.clone();
 
         Ok(quinn::crypto::rustls::QuicClientConfig::try_from(crypto)
             .map_err(|e| NetworkError::ConnectionFailed(format!("Failed to build QUIC config: {}", e)))?)
@@ -286,11 +370,13 @@ impl QuicTransport {
                 Ok(self.reliable_pending.pop_front())
             }
             QuicChannelType::Unreliable => {
-                // Receive datagram
-                match conn.read_datagram().await {
-                    Ok(data) => Ok(Some(data.to_vec())),
-                    Err(quinn::ConnectionError::ApplicationClosed(_)) => Ok(None),
-                    Err(e) => Err(NetworkError::ReceiveFailed(format!("Failed to receive datagram: {}", e))),
+                // Bounded wait like the reliable channel: without it a caller polling for voice
+                // blocks forever when no datagram arrives. read_datagram is cancel-safe.
+                match tokio::time::timeout(RECEIVE_POLL, conn.read_datagram()).await {
+                    Err(_) => Ok(None),
+                    Ok(Ok(data)) => Ok(Some(data.to_vec())),
+                    Ok(Err(quinn::ConnectionError::ApplicationClosed(_))) => Ok(None),
+                    Ok(Err(e)) => Err(NetworkError::ReceiveFailed(format!("Failed to receive datagram: {}", e))),
                 }
             }
         }
@@ -323,11 +409,7 @@ impl NetworkTransport for QuicTransport {
             .as_ref()
             .ok_or_else(|| NetworkError::ConnectionFailed("No endpoint".to_string()))?;
 
-        // Extract server name for SNI
-        let server_name = match &self.server_addr {
-            NetworkAddress::Tcp { host, .. } | NetworkAddress::Udp { host, .. } => host.clone(),
-            _ => return Err(NetworkError::ConnectionFailed("Invalid address type".to_string())),
-        };
+        let server_name = self.server_name.clone();
 
         // Connect with timeout
         let runtime = self.runtime.handle().clone();
@@ -461,5 +543,112 @@ impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
             rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
             rustls::SignatureScheme::ED25519,
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestServer {
+        addr: SocketAddr,
+        cert_pem: String,
+        endpoint: Endpoint,
+    }
+
+    /// QUIC echo-ish server on 127.0.0.1 with a fresh self-signed cert for "localhost".
+    fn start_server(rt: &tokio::runtime::Runtime, alpn: &[u8]) -> TestServer {
+        let rcgen::CertifiedKey { cert, key_pair } = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let key = rustls::pki_types::PrivateKeyDer::Pkcs8(key_pair.serialize_der().into());
+        let mut crypto = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert.der().clone()], key)
+            .unwrap();
+        crypto.alpn_protocols = vec![alpn.to_vec()];
+        let server = quinn::ServerConfig::with_crypto(Arc::new(quinn::crypto::rustls::QuicServerConfig::try_from(crypto).unwrap()));
+        let endpoint = rt.block_on(async { Endpoint::server(server, "127.0.0.1:0".parse().unwrap()).unwrap() });
+        let addr = endpoint.local_addr().unwrap();
+        let ep = endpoint.clone();
+        rt.spawn(async move {
+            while let Some(incoming) = ep.accept().await {
+                tokio::spawn(async move {
+                    if let Ok(conn) = incoming.await {
+                        // Echo the first datagram back, then keep the connection open.
+                        if let Ok(d) = conn.read_datagram().await {
+                            let _ = conn.send_datagram(d);
+                        }
+                        conn.closed().await;
+                    }
+                });
+            }
+        });
+        TestServer { addr, cert_pem: cert.pem(), endpoint }
+    }
+
+    fn client(server: &TestServer, trust: QuicTrust, alpn: &[u8]) -> QuicTransport {
+        let addr = NetworkAddress::Udp { host: server.addr.ip().to_string(), port: server.addr.port() };
+        let options = QuicClientOptions { alpn: vec![alpn.to_vec()], trust, server_name: Some("localhost".into()) };
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+        QuicTransport::with_options(addr, Duration::from_secs(3), options, rt).unwrap()
+    }
+
+    fn server_rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap()
+    }
+
+    #[test]
+    fn pinned_certificate_connects_and_datagrams_flow() {
+        let rt = server_rt();
+        let server = start_server(&rt, b"flowstation-dispatch-v0");
+        let mut t = client(&server, QuicTrust::PinnedPem(server.cert_pem.clone().into_bytes()), b"flowstation-dispatch-v0");
+        t.connect().expect("connects with pinned cert");
+
+        // Nothing sent yet: polling must return quickly instead of blocking.
+        let start = Instant::now();
+        assert!(t.receive_unreliable().is_empty());
+        assert!(start.elapsed() < Duration::from_millis(500), "datagram poll blocked for {:?}", start.elapsed());
+
+        t.send_unreliable(b"voice").unwrap();
+        let mut echoed = Vec::new();
+        for _ in 0..100 {
+            echoed = t.receive_unreliable();
+            if !echoed.is_empty() {
+                break;
+            }
+        }
+        assert_eq!(echoed.first().map(|m| m.payload.as_slice()), Some(&b"voice"[..]));
+        server.endpoint.close(VarInt::from_u32(0), b"done");
+    }
+
+    #[test]
+    fn other_certificate_is_refused() {
+        let rt = server_rt();
+        let server = start_server(&rt, DEFAULT_ALPN);
+        let other = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap().cert.pem();
+        let mut t = client(&server, QuicTrust::PinnedPem(other.into_bytes()), DEFAULT_ALPN);
+        assert!(t.connect().is_err(), "must not connect to a server with a different certificate");
+    }
+
+    #[test]
+    fn alpn_mismatch_is_refused() {
+        let rt = server_rt();
+        let server = start_server(&rt, b"flowstation-dispatch-v0");
+        let mut t = client(&server, QuicTrust::PinnedPem(server.cert_pem.clone().into_bytes()), b"something-else");
+        assert!(t.connect().is_err());
+    }
+
+    #[test]
+    fn empty_pin_file_is_an_error() {
+        let rt = server_rt();
+        let server = start_server(&rt, DEFAULT_ALPN);
+        let addr = NetworkAddress::Udp { host: server.addr.ip().to_string(), port: server.addr.port() };
+        let options = QuicClientOptions { trust: QuicTrust::PinnedPem(b"not a pem".to_vec()), ..Default::default() };
+        let result = QuicTransport::with_options(addr, Duration::from_secs(1), options, server_rt());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn default_options_keep_legacy_alpn() {
+        assert_eq!(QuicClientOptions::default().alpn, vec![b"hq-29".to_vec()]);
     }
 }

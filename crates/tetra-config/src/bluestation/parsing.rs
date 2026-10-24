@@ -21,6 +21,7 @@ use super::sec_recovery::{CfgRecoveryDto, apply_recovery_patch};
 use super::sec_security::{CfgSecurityDto, apply_security_patch};
 use super::sec_snom_notify::{CfgSnomNotifyDto, apply_snom_notify_patch};
 use super::sec_telegram::{CfgTelegramDto, apply_telegram_patch};
+use super::sec_dispatcher::{CfgDispatcherDto, apply_dispatcher_patch};
 use super::sec_telemetry::{CfgTelemetryDto, apply_telemetry_patch};
 use super::sec_tpg2200_action::{CfgTpg2200ActionDto, apply_tpg2200_action_patch};
 use super::sec_wx::{CfgWxServiceDto, apply_wx_service_patch};
@@ -164,6 +165,13 @@ pub fn from_toml_str(toml_str: &str) -> Result<StackConfig, Box<dyn std::error::
         return Err(format!("Unrecognized fields in telemetry config: {:?}", sorted_keys(&telemetry.extra)).into());
     }
 
+    // Optional dispatcher section
+    if let Some(ref dispatcher) = root.dispatcher
+        && !dispatcher.extra.is_empty()
+    {
+        return Err(format!("Unrecognized fields in dispatcher config: {:?}", sorted_keys(&dispatcher.extra)).into());
+    }
+
     // Optional telegram_alerts section
     if let Some(ref telegram) = root.telegram_alerts
         && !telegram.extra.is_empty()
@@ -236,6 +244,7 @@ pub fn from_toml_str(toml_str: &str) -> Result<StackConfig, Box<dyn std::error::
         snom_notify: apply_snom_notify_patch(root.snom_notify.unwrap_or_default())?,
         dashboard: None,
         telemetry: None,
+        dispatcher: None,
         control: None,
         security: apply_security_patch(root.security.unwrap_or_default()),
         wx_service: apply_wx_service_patch(root.wx_service.unwrap_or_default()),
@@ -255,6 +264,10 @@ pub fn from_toml_str(toml_str: &str) -> Result<StackConfig, Box<dyn std::error::
 
     if let Some(telemetry) = root.telemetry {
         cfg.telemetry = Some(apply_telemetry_patch(telemetry)?);
+    }
+
+    if let Some(dispatcher) = root.dispatcher {
+        cfg.dispatcher = Some(apply_dispatcher_patch(dispatcher)?);
     }
 
     if let Some(command) = root.command {
@@ -312,6 +325,7 @@ struct TomlConfigRoot {
     snom_notify: Option<CfgSnomNotifyDto>,
     dashboard: Option<CfgDashboardDto>,
     telemetry: Option<CfgTelemetryDto>,
+    dispatcher: Option<CfgDispatcherDto>,
     command: Option<CfgControlDto>,
     security: Option<CfgSecurityDto>,
     #[serde(rename = "wx_service")]
