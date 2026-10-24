@@ -5,6 +5,13 @@
 Changes of the `[dispatcher]` link in this fork (branch `feature/dispatcher-link`). The platform
 side: [flowstation-platform CHANGELOG](https://github.com/hbohatix/flowstation-platform/blob/main/CHANGELOG.md).
 
+## Bus types — 2026-10-25 (platform 0.5.0)
+
+- `crates/dispatch-proto/src/bus.rs` follows the platform: new `CoreEvent::NodeLink { rtt_ms }`
+  (the core's QUIC round-trip time to the station, shown as the station's ping in the console).
+  Bus-only type used between platform services; the station↔core wire protocol is unchanged
+  (still v2), so stations need no update.
+
 ## Protocol v2 — 2026-10-25
 
 - Every group call is monitored for the platform (`MonitorSet { all }`), including network

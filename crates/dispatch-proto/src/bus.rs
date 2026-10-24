@@ -72,6 +72,8 @@ pub enum CoreEvent {
     /// the platform setting and the node's `SettingsApplied` reply.
     NodeOnline { software: String, dispatcher_issi: Option<Issi>, dispatch_gssis: Vec<Gssi> },
     NodeOffline { reason: String },
+    /// Link quality, every few seconds while connected: QUIC round-trip time in ms.
+    NodeLink { rtt_ms: u32 },
 }
 
 #[cfg(test)]

@@ -5,6 +5,13 @@
 Зміни каналу `[dispatcher]` у цьому форку (гілка `feature/dispatcher-link`). Бік платформи:
 [CHANGELOG flowstation-platform](https://github.com/hbohatix/flowstation-platform/blob/main/CHANGELOG.uk.md).
 
+## Типи шини — 2026-10-25 (платформа 0.5.0)
+
+- `crates/dispatch-proto/src/bus.rs` повторює платформу: новий `CoreEvent::NodeLink { rtt_ms }`
+  (RTT QUIC від core до станції, показується в консолі як пінг станції). Тип лише для шини між
+  сервісами платформи; протокол станція↔core не змінився (і далі v2), тож станції оновлювати не
+  потрібно.
+
 ## Протокол v2 — 2026-10-25
 
 - Для платформи прослуховується кожен груповий виклик (`MonitorSet { all }`), разом із мережевими
