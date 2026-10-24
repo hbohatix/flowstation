@@ -393,9 +393,10 @@ impl CcBsSubentity {
 
         for (call_id, origin) in to_drop {
             tracing::info!("CMCE: dropping call_id={} gssi={} (no listeners)", call_id, gssi);
-            if let CallOrigin::Network { brew_uuid } = origin {
-                if brew::is_brew_gssi_routable(&self.config, gssi) {
-                    self.notify_network_call_end(queue, brew_uuid);
+            if let CallOrigin::Network { brew_uuid, owner } = origin {
+                // Brew only hears about routable groups (as before); the dispatcher always does.
+                if owner != TetraEntity::Brew || brew::is_brew_gssi_routable(&self.config, gssi) {
+                    self.notify_network_call_end(queue, brew_uuid, owner);
                 };
             };
             self.release_group_call(queue, call_id, DisconnectCause::SwmiRequestedDisconnection);

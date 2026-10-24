@@ -2590,3 +2590,246 @@ fn test_second_group_setup_to_active_gssi_is_late_entry() {
         "the ongoing speaker keeps the floor"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Dispatcher link (stage 0b): dispatcher-owned network calls and the Brew guard.
+// ---------------------------------------------------------------------------
+
+const DISPATCH_GSSI: u32 = 91;
+const DISPATCHER_ISSI: u32 = 9_000_001;
+
+fn dispatcher_cfg(gssis: Vec<u32>) -> tetra_config::bluestation::CfgDispatcher {
+    tetra_config::bluestation::CfgDispatcher {
+        enabled: true,
+        server_host: "127.0.0.1".into(),
+        server_port: 4433,
+        server_name: None,
+        ca_cert: None,
+        node_id: "test-node".into(),
+        token: "t".into(),
+        gssis,
+        fallback_issi: Some(DISPATCHER_ISSI),
+        default_priority: 0,
+        max_tx_seconds: 60,
+        link_timeout_ms: 6000,
+    }
+}
+
+/// Brew configured and the dispatch group local-only (as the startup validation demands),
+/// unless `dispatch_group_brew_routable` deliberately breaks that to test the CMCE guard alone.
+fn dispatcher_test(dispatch_group_brew_routable: bool) -> ComponentTest {
+    let mut config = ComponentTest::get_default_test_config(StackMode::Bs);
+    config.brew = Some(test_brew_cfg());
+    if !dispatch_group_brew_routable {
+        config.cell.local_ssi_ranges =
+            tetra_core::ranges::SortedDisjointSsiRanges::from_vec_tuple(vec![(DISPATCH_GSSI, DISPATCH_GSSI)]);
+    }
+    config.dispatcher = Some(dispatcher_cfg(vec![DISPATCH_GSSI]));
+    let mut test = ComponentTest::from_config(config, Some(TdmaTime { h: 0, m: 1, f: 1, t: 1 }));
+    test.populate_entities(
+        vec![TetraEntity::Cmce],
+        vec![TetraEntity::Mle, TetraEntity::Umac, TetraEntity::Brew, TetraEntity::Dispatcher],
+    );
+    test
+}
+
+fn dispatcher_call_start(uuid: uuid::Uuid, gssi: u32, priority: u8) -> SapMsg {
+    SapMsg {
+        sap: Sap::Control,
+        src: TetraEntity::Dispatcher,
+        dest: TetraEntity::Cmce,
+        msg: SapMsgInner::CmceCallControl(CallControl::NetworkCallStart {
+            brew_uuid: uuid,
+            source_issi: DISPATCHER_ISSI,
+            dest_gssi: gssi,
+            priority,
+        }),
+    }
+}
+
+fn to_brew(msgs: &[SapMsg]) -> usize {
+    msgs.iter().filter(|m| m.dest == TetraEntity::Brew).count()
+}
+
+fn dispatcher_rejection(msgs: &[SapMsg], uuid: uuid::Uuid) -> Option<tetra_saps::control::call_control::NetworkCallRejectReason> {
+    msgs.iter().find_map(|m| match &m.msg {
+        SapMsgInner::CmceCallControl(CallControl::NetworkCallRejected { brew_uuid, reason })
+            if m.dest == TetraEntity::Dispatcher && *brew_uuid == uuid =>
+        {
+            Some(*reason)
+        }
+        _ => None,
+    })
+}
+
+#[test]
+fn test_dispatcher_call_never_reaches_brew() {
+    let radio_a = 2_603_877;
+    let radio_b = 2_603_878;
+    let uuid = uuid::Uuid::parse_str("0b5c0a0e-0000-4000-8000-000000000091").unwrap();
+    let mut test = dispatcher_test(false);
+    register_subscriber(&mut test, radio_a, DISPATCH_GSSI);
+    register_subscriber(&mut test, radio_b, DISPATCH_GSSI);
+    let mut all = Vec::new();
+
+    // Dispatcher starts a call with priority 11.
+    test.submit_message(dispatcher_call_start(uuid, DISPATCH_GSSI, 11));
+    test.run_stack(Some(1));
+    let msgs = test.dump_sinks();
+    let call_id = msgs
+        .iter()
+        .find_map(|m| match &m.msg {
+            SapMsgInner::CmceCallControl(CallControl::NetworkCallReady { brew_uuid, call_id, .. })
+                if m.dest == TetraEntity::Dispatcher && *brew_uuid == uuid =>
+            {
+                Some(*call_id)
+            }
+            _ => None,
+        })
+        .expect("NetworkCallReady must go to the dispatcher, the call's owner");
+
+    // D-SETUP on air carries the dispatcher's priority (EN 300 392-2 table 14.46) and ISSI.
+    let (mut sdu, _) = find_lcmc_req(&msgs, DISPATCH_GSSI, CmcePduTypeDl::DSetup).expect("group D-SETUP");
+    let d_setup = DSetup::from_bitbuf(&mut sdu).expect("parse D-SETUP");
+    assert_eq!(d_setup.call_priority, 11);
+    assert_eq!(d_setup.calling_party_address_ssi, Some(DISPATCHER_ISSI));
+    all.extend(msgs);
+
+    // Dispatcher releases PTT: hangtime.
+    test.submit_message(SapMsg {
+        sap: Sap::Control,
+        src: TetraEntity::Dispatcher,
+        dest: TetraEntity::Cmce,
+        msg: SapMsgInner::CmceCallControl(CallControl::NetworkCallEnd { brew_uuid: uuid }),
+    });
+    test.run_stack(Some(1));
+    all.extend(test.dump_sinks());
+
+    // Radio B answers in hangtime: the dispatcher is told (for monitoring), Brew is not.
+    test.submit_message(build_u_tx_demand_msg(radio_b, call_id));
+    test.run_stack(Some(1));
+    let reply = test.dump_sinks();
+    assert!(
+        reply.iter().any(|m| m.dest == TetraEntity::Dispatcher
+            && matches!(&m.msg, SapMsgInner::CmceCallControl(CallControl::FloorGranted { source_issi, .. }) if *source_issi == radio_b)),
+        "dispatcher must see radio B take the floor"
+    );
+    all.extend(reply);
+
+    test.submit_message(build_u_tx_ceased_msg(radio_b, call_id));
+    test.run_stack(Some(5));
+    all.extend(test.dump_sinks());
+
+    assert_eq!(to_brew(&all), 0, "a dispatcher call must never produce a message for Brew");
+}
+
+#[test]
+fn test_dispatch_group_is_never_announced_to_brew_even_if_routable() {
+    // Misconfiguration on purpose: group 91 is Brew-routable. The startup check would disable the
+    // link; here we check the CMCE guard on its own: a local radio calling on a dispatch group
+    // must not be announced to Brew either.
+    let radio = 2_603_877;
+    let mut test = dispatcher_test(true);
+    register_subscriber(&mut test, radio, DISPATCH_GSSI);
+
+    test.submit_message(build_u_setup_msg(radio, DISPATCH_GSSI));
+    test.run_stack(Some(1));
+    let msgs = test.dump_sinks();
+    assert_eq!(to_brew(&msgs), 0, "dispatch group calls must not be announced to Brew");
+    assert!(msgs.iter().any(|m| m.dest == TetraEntity::Dispatcher
+        && matches!(&m.msg, SapMsgInner::CmceCallControl(CallControl::FloorGranted { source_issi, .. }) if *source_issi == radio)));
+}
+
+#[test]
+fn test_dispatcher_call_refused_when_group_is_brew_routable_at_runtime() {
+    let radio = 2_603_877;
+    let uuid = uuid::Uuid::new_v4();
+    let mut test = dispatcher_test(true);
+    register_subscriber(&mut test, radio, DISPATCH_GSSI);
+    test.submit_message(dispatcher_call_start(uuid, DISPATCH_GSSI, 0));
+    test.run_stack(Some(1));
+    let msgs = test.dump_sinks();
+    assert_eq!(
+        dispatcher_rejection(&msgs, uuid),
+        Some(tetra_saps::control::call_control::NetworkCallRejectReason::BrewRoutable)
+    );
+    assert!(find_lcmc_req(&msgs, DISPATCH_GSSI, CmcePduTypeDl::DSetup).is_none(), "nothing goes on air");
+    assert_eq!(to_brew(&msgs), 0);
+}
+
+#[test]
+fn test_dispatcher_call_refused_on_group_outside_its_list() {
+    let radio = 2_603_877;
+    let other_gssi = 92;
+    let uuid = uuid::Uuid::new_v4();
+    let mut test = dispatcher_test(false);
+    register_subscriber(&mut test, radio, other_gssi);
+    test.submit_message(dispatcher_call_start(uuid, other_gssi, 0));
+    test.run_stack(Some(1));
+    let msgs = test.dump_sinks();
+    assert_eq!(
+        dispatcher_rejection(&msgs, uuid),
+        Some(tetra_saps::control::call_control::NetworkCallRejectReason::NotAllowed)
+    );
+    assert!(find_lcmc_req(&msgs, other_gssi, CmcePduTypeDl::DSetup).is_none());
+}
+
+#[test]
+fn test_dispatcher_call_refused_without_listeners() {
+    let uuid = uuid::Uuid::new_v4();
+    let mut test = dispatcher_test(false);
+    test.submit_message(dispatcher_call_start(uuid, DISPATCH_GSSI, 0));
+    test.run_stack(Some(1));
+    let msgs = test.dump_sinks();
+    assert_eq!(
+        dispatcher_rejection(&msgs, uuid),
+        Some(tetra_saps::control::call_control::NetworkCallRejectReason::NoListeners)
+    );
+}
+
+#[test]
+fn test_dispatcher_does_not_take_the_floor_from_a_talking_radio() {
+    // Stage 0: explicit refusal. Interruption per EN 300 392-2 14.5.1.2.1 f comes in stage 1.
+    let radio = 2_603_877;
+    let uuid = uuid::Uuid::new_v4();
+    let mut test = dispatcher_test(false);
+    register_subscriber(&mut test, radio, DISPATCH_GSSI);
+    test.submit_message(build_u_setup_msg(radio, DISPATCH_GSSI));
+    test.run_stack(Some(1));
+    test.dump_sinks();
+
+    test.submit_message(dispatcher_call_start(uuid, DISPATCH_GSSI, 0));
+    test.run_stack(Some(1));
+    let msgs = test.dump_sinks();
+    assert_eq!(
+        dispatcher_rejection(&msgs, uuid),
+        Some(tetra_saps::control::call_control::NetworkCallRejectReason::FloorBusy)
+    );
+}
+
+#[test]
+fn test_brew_network_call_unchanged_with_dispatcher_enabled() {
+    // Brew-owned calls keep their old behaviour: ready goes to Brew, priority not put on air.
+    let radio = 2_603_877;
+    let brew_gssi = 220;
+    let uuid = uuid::Uuid::new_v4();
+    let mut test = dispatcher_test(false);
+    register_subscriber(&mut test, radio, brew_gssi);
+    test.submit_message(SapMsg {
+        sap: Sap::Control,
+        src: TetraEntity::Brew,
+        dest: TetraEntity::Cmce,
+        msg: SapMsgInner::CmceCallControl(CallControl::NetworkCallStart {
+            brew_uuid: uuid,
+            source_issi: 2_200_107,
+            dest_gssi: brew_gssi,
+            priority: 11,
+        }),
+    });
+    test.run_stack(Some(1));
+    let msgs = test.dump_sinks();
+    assert!(msgs.iter().any(|m| m.dest == TetraEntity::Brew
+        && matches!(&m.msg, SapMsgInner::CmceCallControl(CallControl::NetworkCallReady { brew_uuid, .. }) if *brew_uuid == uuid)));
+    let (mut sdu, _) = find_lcmc_req(&msgs, brew_gssi, CmcePduTypeDl::DSetup).expect("group D-SETUP");
+    assert_eq!(DSetup::from_bitbuf(&mut sdu).unwrap().call_priority, 0);
+}

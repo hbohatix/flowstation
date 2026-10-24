@@ -1,0 +1,22 @@
+[package]
+name = "dispatch-proto"
+description = "Wire protocol of the dispatcher link (copy of flowstation-platform crates/proto)"
+version = "0.1.0"
+edition.workspace = true
+license = "MIT"
+
+# DO NOT EDIT the sources here by hand. This crate is a byte-compatible copy of
+# hbohatix/flowstation-platform crates/proto (private repo, so no git dependency — it would
+# break this repo's release CI). Change the protocol there, then re-copy. Source commit: see
+# the header of src/lib.rs.
+
+[dependencies]
+bitcode = { workspace = true }
+serde = { workspace = true }
+thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true

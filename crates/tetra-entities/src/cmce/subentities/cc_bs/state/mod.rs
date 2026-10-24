@@ -59,9 +59,12 @@ pub(super) enum CallOrigin {
     Local {
         caller_addr: TetraAddress, // For D-CALL-PROCEEDING, D-CONNECT routing
     },
-    /// Network-initiated call from TetraPack/Brew
+    /// Network-initiated call from a network entity (Brew/TetraPack or the dispatcher link)
     Network {
-        brew_uuid: uuid::Uuid, // For Brew tracking
+        brew_uuid: uuid::Uuid, // Session id of the network leg
+        /// Entity that started the call and receives its replies (`NetworkCallReady`,
+        /// `NetworkCallEnd`/`NetworkCallRejected`): `TetraEntity::Brew` or `TetraEntity::Dispatcher`.
+        owner: TetraEntity,
     },
 }
 
@@ -213,6 +216,7 @@ impl ActiveCall {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new_network(
         brew_uuid: uuid::Uuid,
+        owner: TetraEntity,
         dest_gssi: u32,
         source_issi: u32,
         carrier_num: u16,
@@ -223,7 +227,7 @@ impl ActiveCall {
         priority: u8,
     ) -> Self {
         Self {
-            origin: CallOrigin::Network { brew_uuid },
+            origin: CallOrigin::Network { brew_uuid, owner },
             dest_gssi,
             source_issi,
             created_at,

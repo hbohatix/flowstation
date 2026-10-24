@@ -78,6 +78,22 @@ pub struct NetworkCircuitCall {
     pub queued: u8,
 }
 
+/// Why CMCE refused a network-initiated group call (sent to dispatcher-owned calls only;
+/// Brew keeps receiving `NetworkCallEnd` as before).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkCallRejectReason {
+    /// GSSI is not on the dispatcher's list.
+    NotAllowed,
+    /// GSSI is routable to Brew; dispatcher traffic must stay local.
+    BrewRoutable,
+    /// No registered radio listens to the group.
+    NoListeners,
+    /// A local radio holds the floor (interruption per ETSI comes in stage 1).
+    FloorBusy,
+    /// No free traffic timeslot.
+    NoResources,
+}
+
 #[derive(Debug, Clone)]
 pub enum CallControl {
     /// Signals to set up a circuit
@@ -130,6 +146,12 @@ pub enum CallControl {
     /// Sent by Brew when TetraPack sends GROUP_IDLE, or by CMCE to make Brew drop a call
     NetworkCallEnd {
         brew_uuid: uuid::Uuid, // Identifies the call to end
+    },
+    /// CMCE refused a network-initiated group call. Sent to the owning network entity
+    /// instead of `NetworkCallEnd` when that entity is the dispatcher link.
+    NetworkCallRejected {
+        brew_uuid: uuid::Uuid,
+        reason: NetworkCallRejectReason,
     },
     /// Notify CMCE that network media is still arriving for an active group call.
     /// Used to refresh the BS-side call timeout while the backhaul is still sending voice.

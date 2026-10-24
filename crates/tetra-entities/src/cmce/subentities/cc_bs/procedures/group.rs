@@ -296,6 +296,7 @@ impl CcBsSubentity {
         &mut self,
         queue: &mut MessageQueue,
         call_id: u16,
+        owner: TetraEntity,
         brew_uuid: uuid::Uuid,
         source_issi: u32,
     ) -> Result<(), GroupTransitionError> {
@@ -310,11 +311,11 @@ impl CcBsSubentity {
         call.grant_floor(source_issi, None);
         call.touch_activity(self.dltime);
         call.brew_uuid = Some(brew_uuid);
-        if let CallOrigin::Network { brew_uuid: old_uuid } = call.origin
+        if let CallOrigin::Network { brew_uuid: old_uuid, .. } = call.origin
             && old_uuid != brew_uuid
         {
             tracing::warn!("CMCE FSM: network call start changed brew_uuid call_id={}", call_id);
-            call.origin = CallOrigin::Network { brew_uuid };
+            call.origin = CallOrigin::Network { brew_uuid, owner };
         }
 
         let ts = call.ts;
@@ -329,7 +330,7 @@ impl CcBsSubentity {
         queue.push_back(SapMsg {
             sap: Sap::Control,
             src: TetraEntity::Cmce,
-            dest: TetraEntity::Brew,
+            dest: owner,
             msg: SapMsgInner::CmceCallControl(CallControl::NetworkCallReady {
                 brew_uuid,
                 call_id,

@@ -847,3 +847,26 @@ voice_service = true
 # auth_user = "flowstation"
 # password = ""
 # realm = "asterisk"
+
+# ── Dispatcher link (flowstation-platform core) ───────────────────────────────────────
+# Connects this station out to a flowstation-platform core (QUIC/TLS) so a dispatcher
+# console can call groups, monitor them and see radios. See Docs/dispatcher-link.md.
+#
+# Dispatcher calls stay LOCAL to this cell and are never sent to Brew. Every group in
+# `gssis` must be local-only: if one is routable to Brew, the dispatcher link is not
+# started (the station itself keeps running). Put the groups in cell_info.local_ssi_ranges.
+#
+# The dispatcher ISSI (the caller radios see) is a console setting; `fallback_issi` is
+# used while that setting is empty.
+
+# [dispatcher]
+# server = "192.168.1.10:4433"
+# server_name = "core"
+# ca_cert = "/etc/flowstation/core-cert.pem"
+# node_id = "station-01"
+# token = "change-me"
+# gssis = [91]
+# fallback_issi = 9000001
+# default_priority = 0
+# max_tx_seconds = 60
+# link_timeout_ms = 6000

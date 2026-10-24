@@ -17,6 +17,7 @@ use tetra_entities::net_asterisk::entity::AsteriskEntity;
 use tetra_entities::net_brew::entity::BrewEntity;
 use tetra_entities::net_brew::new_websocket_transport;
 use tetra_entities::net_dapnet::spawn_dapnet_worker;
+use tetra_entities::net_dispatcher::entity::DispatcherEntity;
 use tetra_entities::net_dashboard::DashboardServer;
 use tetra_entities::net_geoalarm::{GeoAlarmSink, spawn_geoalarm_worker};
 use tetra_entities::net_snom::{snom_notify_channel, spawn_snom_notify_worker};
@@ -167,6 +168,7 @@ fn build_bs_stack(
     Option<TelemetrySource>,
     HashMap<TetraEntity, CommandDispatcher>,
     Option<TelemetrySink>,
+    Option<TelemetrySink>,
 ) {
     let mut router = MessageRouter::new(cfg.clone());
 
@@ -175,7 +177,8 @@ fn build_bs_stack(
         || cfg.config().dashboard.is_some()
         || cfg.config().telegram.is_some()
         || cfg.config().geoalarm.enabled
-        || cfg.effective_snom_notify().enabled;
+        || cfg.effective_snom_notify().enabled
+        || cfg.config().dispatcher.as_ref().is_some_and(|d| d.enabled);
     let (tsink, tsource) = if needs_telemetry {
         let (a, b) = telemetry_channel();
         (Some(a), Some(b))
@@ -300,6 +303,32 @@ fn build_bs_stack(
         eprintln!(" -> Brew/TetraPack integration enabled");
     }
 
+    // Register the dispatcher link (flowstation-platform core) if enabled. Dispatcher groups
+    // must be local-only: a Brew-routable one disables the link (the station itself keeps running).
+    let mut dispatcher_tap: Option<TelemetrySink> = None;
+    if let Some(dcfg) = cfg.config().dispatcher.clone().filter(|d| d.enabled) {
+        if let Err(conflicts) = tetra_entities::net_dispatcher::routing::validate_against_brew(cfg) {
+            tracing::error!(
+                "[dispatcher] disabled: gssis {:?} are routable to Brew. Dispatcher groups must stay local                  (put them in cell local_ssi_ranges or remove them from [dispatcher].gssis)",
+                conflicts
+            );
+            eprintln!(" -> Dispatcher link NOT started: gssis {:?} are Brew-routable", conflicts);
+        } else {
+            match tetra_entities::net_dispatcher::new_quic_transport(&dcfg) {
+                Ok(transport) => {
+                    let (tap_sink, tap_source) = telemetry_channel();
+                    router.register_entity(Box::new(DispatcherEntity::new(cfg.clone(), transport, Some(tap_source))));
+                    dispatcher_tap = Some(tap_sink);
+                    eprintln!(" -> Dispatcher link enabled (core {}:{})", dcfg.server_host, dcfg.server_port);
+                }
+                Err(err) => {
+                    tracing::error!("[dispatcher] disabled: {:?}", err);
+                    eprintln!(" -> Dispatcher link NOT started: {:?}", err);
+                }
+            }
+        }
+    }
+
     // Register Asterisk SIP/RTP entity if enabled. Only compiled in with the
     // `asterisk` feature, which links the native TETRA codec.
     #[cfg(feature = "asterisk")]
@@ -318,7 +347,7 @@ fn build_bs_stack(
     // Init network time
     router.set_dl_time(TdmaTime::default());
 
-    (router, tsource, c_d, tsink)
+    (router, tsource, c_d, tsink, dispatcher_tap)
 }
 
 #[derive(Parser, Debug)]
@@ -389,7 +418,7 @@ fn main() {
         );
     }
 
-    let (mut router, tsource, cdispatchers, dapnet_telemetry_sink) = build_bs_stack(&mut cfg, &args.config);
+    let (mut router, tsource, cdispatchers, dapnet_telemetry_sink, dispatcher_tap) = build_bs_stack(&mut cfg, &args.config);
     let dapnet_cmd_tx = cdispatchers.get(&TetraEntity::Cmce).map(|dispatcher| dispatcher.clone_sender());
     let mut dapnet_telegram_sink: Option<TelegramAlertSink> = None;
     #[allow(unused_assignments)]
@@ -546,6 +575,7 @@ fn main() {
             let alert = alert_sink.clone();
             let snom = snom_notify_sink.clone();
             let geoalarm = geoalarm_sink.clone();
+            let dispatcher = dispatcher_tap.clone();
             thread::Builder::new()
                 .name("telemetry-fanout".into())
                 .spawn(move || {
@@ -589,6 +619,9 @@ fn main() {
                                 }
                                 if let Some(s) = &snom {
                                     s.send_event(event.clone());
+                                }
+                                if let Some(s) = &dispatcher {
+                                    s.send(event.clone());
                                 }
                                 if let Some(t) = &tee_sink {
                                     t.send(event);

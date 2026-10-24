@@ -134,12 +134,17 @@ impl CcBsSubentity {
     pub(super) fn rx_network_call_start(
         &mut self,
         queue: &mut MessageQueue,
+        owner: TetraEntity,
         brew_uuid: uuid::Uuid,
         source_issi: u32,
         dest_gssi: u32,
         priority: u8,
     ) {
-        self.fsm_on_network_call_start(queue, brew_uuid, source_issi, dest_gssi, priority);
+        if !matches!(owner, TetraEntity::Brew | TetraEntity::Dispatcher) {
+            tracing::warn!("CMCE: ignoring NetworkCallStart from unexpected entity {:?}", owner);
+            return;
+        }
+        self.fsm_on_network_call_start(queue, owner, brew_uuid, source_issi, dest_gssi, priority);
     }
 
     /// Handle network call end request

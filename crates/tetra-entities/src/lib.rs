@@ -18,6 +18,7 @@ pub mod net_asterisk;
 pub mod net_brew;
 pub mod net_control;
 pub mod net_dapnet;
+pub mod net_dispatcher;
 pub mod net_dashboard;
 pub mod net_geoalarm;
 pub mod net_location;

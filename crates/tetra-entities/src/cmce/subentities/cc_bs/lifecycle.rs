@@ -27,7 +27,11 @@ impl BrewNotification {
     fn enabled(self, config: &SharedConfig) -> bool {
         match self {
             BrewNotification::Never => false,
-            BrewNotification::IfGroupRoutable(gssi) => brew::is_brew_gssi_routable(config, gssi),
+            // A dispatch group is never announced to Brew, whoever started the call
+            // (dispatcher, a local radio, a radio answering the dispatcher).
+            BrewNotification::IfGroupRoutable(gssi) => {
+                brew::is_brew_gssi_routable(config, gssi) && !dispatch::suppress_brew_for_gssi(config, gssi)
+            }
         }
     }
 }
@@ -85,6 +89,21 @@ impl CcBsSubentity {
                 },
             );
         }
+
+        // The dispatcher link sees every floor change; it filters by its monitored groups.
+        if grant.is_group && dispatch::is_enabled(&self.config) {
+            Self::push_control(
+                queue,
+                TetraEntity::Dispatcher,
+                CallControl::FloorGranted {
+                    call_id: grant.call_id,
+                    source_issi: grant.source_issi,
+                    dest_gssi: grant.dest_gssi,
+                    carrier_num: grant.carrier_num,
+                    ts: grant.ts,
+                },
+            );
+        }
     }
 
     pub(super) fn notify_remote_floor_granted(&self, queue: &mut MessageQueue, slot: CallTimeslot) {
@@ -129,6 +148,18 @@ impl CcBsSubentity {
                 },
             );
         }
+
+        if dispatch::is_enabled(&self.config) {
+            Self::push_control(
+                queue,
+                TetraEntity::Dispatcher,
+                CallControl::FloorReleased {
+                    call_id: slot.call_id,
+                    carrier_num: slot.carrier_num,
+                    ts: slot.ts,
+                },
+            );
+        }
     }
 
     pub(super) fn notify_call_ended(&self, queue: &mut MessageQueue, slot: CallTimeslot, notify_umac: bool, notify_brew: BrewNotification) {
@@ -155,10 +186,40 @@ impl CcBsSubentity {
                 },
             );
         }
+
+        if dispatch::is_enabled(&self.config) {
+            Self::push_control(
+                queue,
+                TetraEntity::Dispatcher,
+                CallControl::CallEnded {
+                    call_id: slot.call_id,
+                    carrier_num: slot.carrier_num,
+                    ts: slot.ts,
+                },
+            );
+        }
     }
 
-    pub(super) fn notify_network_call_end(&self, queue: &mut MessageQueue, brew_uuid: uuid::Uuid) {
-        Self::push_control(queue, TetraEntity::Brew, CallControl::NetworkCallEnd { brew_uuid });
+    /// Tell the network entity that owns a call that CMCE ended it.
+    pub(super) fn notify_network_call_end(&self, queue: &mut MessageQueue, brew_uuid: uuid::Uuid, owner: TetraEntity) {
+        Self::push_control(queue, owner, CallControl::NetworkCallEnd { brew_uuid });
+    }
+
+    /// Refuse a network call request. The dispatcher gets the reason; Brew keeps getting the
+    /// plain `NetworkCallEnd` it has always received.
+    pub(super) fn notify_network_call_rejected(
+        &self,
+        queue: &mut MessageQueue,
+        brew_uuid: uuid::Uuid,
+        owner: TetraEntity,
+        reason: NetworkCallRejectReason,
+    ) {
+        if owner == TetraEntity::Dispatcher {
+            tracing::info!("CMCE: refusing dispatcher call uuid={} ({:?})", brew_uuid, reason);
+            Self::push_control(queue, owner, CallControl::NetworkCallRejected { brew_uuid, reason });
+        } else {
+            self.notify_network_call_end(queue, brew_uuid, owner);
+        }
     }
 
     pub(super) fn notify_network_circuit_release(

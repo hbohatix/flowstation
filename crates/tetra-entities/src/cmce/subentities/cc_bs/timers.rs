@@ -548,9 +548,10 @@ impl CcBsSubentity {
             );
             // Mirror drop_group_calls_if_unlistened: tell the backhaul the call is over before we
             // tear down locally, so a half-open Brew session doesn't keep us as a phantom leg.
-            if let CallOrigin::Network { brew_uuid } = origin {
-                if brew::is_brew_gssi_routable(&self.config, gssi) {
-                    self.notify_network_call_end(queue, brew_uuid);
+            if let CallOrigin::Network { brew_uuid, owner } = origin {
+                // Brew only hears about routable groups (as before); the dispatcher always does.
+                if owner != TetraEntity::Brew || brew::is_brew_gssi_routable(&self.config, gssi) {
+                    self.notify_network_call_end(queue, brew_uuid, owner);
                 }
             }
             self.release_group_call(queue, call_id, DisconnectCause::SwmiRequestedDisconnection);

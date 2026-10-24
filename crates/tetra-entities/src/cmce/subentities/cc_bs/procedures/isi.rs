@@ -691,22 +691,32 @@ impl CcBsSubentity {
     pub(in crate::cmce::subentities::cc_bs) fn fsm_on_network_call_start(
         &mut self,
         queue: &mut MessageQueue,
+        owner: TetraEntity,
         brew_uuid: uuid::Uuid,
         source_issi: u32,
         dest_gssi: u32,
         priority: u8,
     ) {
-        // Never assert on peer-supplied data. Admit inbound network calls with the
-        // inbound predicate which — unlike is_brew_gssi_routable — must NOT apply the
-        // outbound whitelist (see brew_routable::is_brew_inbound_allowed). A GSSI that
-        // is not admissible is dropped gracefully instead of crashing the base station.
-        if !brew::is_brew_inbound_allowed(&self.config, dest_gssi) {
+        let from_dispatcher = owner == TetraEntity::Dispatcher;
+
+        if from_dispatcher {
+            // Dispatcher calls: only the configured dispatch groups, never a Brew-routable one
+            // (checked again here because the config can be edited live).
+            if let Err(reason) = dispatch::gate_call(&self.config, dest_gssi) {
+                self.notify_network_call_rejected(queue, brew_uuid, owner, reason);
+                return;
+            }
+        } else if !brew::is_brew_inbound_allowed(&self.config, dest_gssi) {
+            // Never assert on peer-supplied data. Admit inbound network calls with the
+            // inbound predicate which — unlike is_brew_gssi_routable — must NOT apply the
+            // outbound whitelist (see brew_routable::is_brew_inbound_allowed). A GSSI that
+            // is not admissible is dropped gracefully instead of crashing the base station.
             tracing::info!(
                 "CMCE: ignoring network call start uuid={} gssi={} (inbound not allowed)",
                 brew_uuid,
                 dest_gssi
             );
-            self.notify_network_call_end(queue, brew_uuid);
+            self.notify_network_call_end(queue, brew_uuid, owner);
             return;
         }
 
@@ -718,17 +728,29 @@ impl CcBsSubentity {
             );
             self.drop_group_calls_if_unlistened(queue, dest_gssi);
 
-            self.notify_network_call_end(queue, brew_uuid);
+            self.notify_network_call_rejected(queue, brew_uuid, owner, NetworkCallRejectReason::NoListeners);
             return;
         }
 
         // Speaker change for an existing GSSI call
-        if let Some((call_id, old_speaker)) = self
+        if let Some((call_id, old_speaker, transmitting)) = self
             .active_calls
             .iter()
             .find(|(_, c)| c.dest_gssi == dest_gssi)
-            .map(|(id, c)| (*id, c.source_issi))
+            .map(|(id, c)| (*id, c.source_issi, matches!(c.state(), GroupCallState::Transmitting)))
         {
+            // Stage 0: the dispatcher does not take the floor from someone who is talking.
+            // Interrupting per EN 300 392-2 §14.5.1.2.1 f (D-TX INTERRUPT) is stage 1.
+            if from_dispatcher && transmitting {
+                tracing::info!(
+                    "CMCE: dispatcher TX on gssi={} refused, ISSI {} holds the floor",
+                    dest_gssi,
+                    old_speaker
+                );
+                self.notify_network_call_rejected(queue, brew_uuid, owner, NetworkCallRejectReason::FloorBusy);
+                return;
+            }
+
             tracing::info!(
                 "CMCE: network call speaker change gssi={} new_speaker={} (was {})",
                 dest_gssi,
@@ -736,7 +758,7 @@ impl CcBsSubentity {
                 old_speaker
             );
 
-            if let Err(err) = self.fsm_group_on_network_call_start(queue, call_id, brew_uuid, source_issi) {
+            if let Err(err) = self.fsm_group_on_network_call_start(queue, call_id, owner, brew_uuid, source_issi) {
                 match err {
                     GroupTransitionError::UnknownCall(_) => {
                         tracing::warn!(
@@ -786,7 +808,7 @@ impl CcBsSubentity {
                 tracing::warn!("CMCE: failed to allocate circuit for network call: {:?}", err);
                 // Like the sibling early-exits above: without this the backhaul keeps the session
                 // open with no CMCE call behind it — a phantom leg until the remote times out.
-                self.notify_network_call_end(queue, brew_uuid);
+                self.notify_network_call_rejected(queue, brew_uuid, owner, NetworkCallRejectReason::NoResources);
                 return;
             }
         };
@@ -827,7 +849,9 @@ impl CcBsSubentity {
             },
             transmission_grant: TransmissionGrant::GrantedToOtherUser,
             transmission_request_permission: false,
-            call_priority: 0,
+            // EN 300 392-2 §14.8.12, table 14.46. Dispatcher calls carry their priority on air;
+            // Brew calls keep "priority not defined" as before.
+            call_priority: if from_dispatcher { priority.min(15) } else { 0 },
             notification_indicator: None,
             temporary_address: None,
             calling_party_address_ssi: Some(source_issi),
@@ -901,6 +925,7 @@ impl CcBsSubentity {
             call_id,
             ActiveCall::new_network(
                 brew_uuid,
+                owner,
                 dest_gssi,
                 source_issi,
                 circuit.carrier_num,
@@ -925,7 +950,7 @@ impl CcBsSubentity {
         queue.push_back(SapMsg {
             sap: Sap::Control,
             src: TetraEntity::Cmce,
-            dest: TetraEntity::Brew,
+            dest: owner,
             msg: SapMsgInner::CmceCallControl(CallControl::NetworkCallReady {
                 brew_uuid,
                 call_id,

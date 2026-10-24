@@ -1691,6 +1691,23 @@ impl UmacBs {
                     }
                 }
 
+                // Forward UL voice to the dispatcher link for monitoring/recording. Like Asterisk,
+                // the entity keeps its own slot -> call map and ignores unrelated circuits.
+                if crate::net_dispatcher::routing::is_enabled(&self.config)
+                    && self.scheduler_for(carrier_num).circuit_is_active(Direction::Ul, ts)
+                {
+                    queue.push_back(SapMsg {
+                        sap: Sap::TmdSap,
+                        src: TetraEntity::Umac,
+                        dest: TetraEntity::Dispatcher,
+                        msg: SapMsgInner::TmdCircuitDataInd(tetra_saps::tmd::TmdCircuitDataInd {
+                            carrier_num,
+                            ts,
+                            data: data.clone(),
+                        }),
+                    });
+                }
+
                 // Forward UL voice to Asterisk if the SIP bridge is enabled. The Asterisk entity
                 // keeps its own ts -> dialog map and ignores unrelated circuits, so we fan out to
                 // every enabled network entity and let each self-filter by active call.
@@ -2115,6 +2132,7 @@ impl UmacBs {
             CallControl::NetworkCallStart { .. }
             | CallControl::NetworkCallReady { .. }
             | CallControl::NetworkCallEnd { .. }
+            | CallControl::NetworkCallRejected { .. }
             | CallControl::NetworkCallMediaActivity { .. }
             | CallControl::NetworkCircuitSetupRequest { .. }
             | CallControl::NetworkCircuitSetupAccept { .. }
