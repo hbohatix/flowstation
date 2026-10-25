@@ -1,4 +1,4 @@
-//! COPY of hbohatix/flowstation-platform `crates/proto` (protocol v3) — do not edit here; change
+//! COPY of hbohatix/flowstation-platform `crates/proto` (protocol v4) — do not edit here; change
 //! the protocol in flowstation-platform and re-copy so both sides stay byte-compatible.
 //!
 //! Wire protocol `flowstation-dispatch-v0`.
@@ -30,8 +30,9 @@ use bitcode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 
 /// Protocol version carried in [`NodeToCore::Hello`]. Bump on any incompatible change.
-/// v3 adds [`NodeToCore::BackhaulStatus`] at the end of the enum; a v2 node still works.
-pub const PROTOCOL_VERSION: u16 = 3;
+/// v3 adds [`NodeToCore::BackhaulStatus`], v4 [`NodeToCore::StationInfo`], both at the end of
+/// the enum; older nodes still work.
+pub const PROTOCOL_VERSION: u16 = 4;
 
 /// Oldest node protocol the core accepts (later versions only append messages).
 pub const MIN_PROTOCOL_VERSION: u16 = 2;
@@ -122,6 +123,46 @@ pub struct NodeStatus {
     pub cpu_temp_c: Option<f32>,
 }
 
+/// A neighbour cell the station announces (EN 300 392-2 §18.5.17, D-NWRK-BROADCAST).
+#[derive(Debug, Clone, PartialEq, Encode, Decode, Serialize, Deserialize)]
+pub struct NeighbourCell {
+    /// Cell identifier within the cluster (0–31).
+    pub cell_id: u8,
+    pub main_carrier: u16,
+    pub location_area: Option<u16>,
+    pub mcc: Option<u16>,
+    pub mnc: Option<u16>,
+    pub synchronized: bool,
+}
+
+/// Inclusive range of group SSIs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode, Serialize, Deserialize)]
+pub struct GssiRange {
+    pub start: u32,
+    pub end: u32,
+}
+
+impl GssiRange {
+    pub fn contains(&self, gssi: u32) -> bool {
+        (self.start..=self.end).contains(&gssi)
+    }
+}
+
+/// Static identity of a station (protocol v4), sent with every [`NodeToCore::NodeStatus`].
+#[derive(Debug, Clone, PartialEq, Encode, Decode, Serialize, Deserialize)]
+pub struct StationInfo {
+    /// Repeater ID the station uses on Brew / TetraPack (the `[brew]` username).
+    pub repeater_id: Option<u32>,
+    /// Brew server host the station connects to.
+    pub brew_host: Option<String>,
+    pub colour_code: u8,
+    pub neighbours: Vec<NeighbourCell>,
+    /// Groups the dispatcher may transmit on: the `[dispatcher]` groups plus, with
+    /// `local_groups`, every local-only group (never Brew-routable). The core routes dispatcher
+    /// PTT by this; the station checks it again for every call.
+    pub dispatch_ranges: Vec<GssiRange>,
+}
+
 /// Messages a FlowStation node sends to the core on the reliable stream.
 #[derive(Debug, Clone, PartialEq, Encode, Decode, Serialize, Deserialize)]
 pub enum NodeToCore {
@@ -178,6 +219,9 @@ pub enum NodeToCore {
     /// State of the node's network backhaul (Brew / TetraPACK), sent with every
     /// [`NodeToCore::NodeStatus`]. `brew_configured: false` = the node has no `[brew]` section.
     BackhaulStatus { brew_configured: bool, brew_connected: bool },
+    // ----- v4 -----
+    /// Repeater ID, Brew server, colour code and neighbour cells, with every `NodeStatus`.
+    StationInfo(StationInfo),
 }
 
 /// Messages the core sends to a node on the reliable stream.

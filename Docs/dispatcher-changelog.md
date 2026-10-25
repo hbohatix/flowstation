@@ -5,6 +5,33 @@
 Changes of the `[dispatcher]` link in this fork (branch `feature/dispatcher-link`). The platform
 side: [flowstation-platform CHANGELOG](https://github.com/hbohatix/flowstation-platform/blob/main/CHANGELOG.md).
 
+## Dispatcher on every local group, protocol v4, no call drop on group reports — 2026-10-25 (platform 0.7.0)
+
+- `[dispatcher] local_groups` (default `true`): the dispatcher may transmit on every local-only
+  group (`cell.local_ssi_ranges`; every group when `[brew]` is absent), not only the listed
+  `gssis`. Brew-routable groups are still refused (`gate_call`), and dispatch groups are still
+  never announced to Brew.
+- Protocol v4: `StationInfo` with every `NodeStatus` — repeater ID (`[brew]` username), Brew host,
+  colour code, neighbour cells, and the dispatch ranges the core routes dispatcher PTT by. Needs
+  platform core 0.7.0 (which accepts v2–v4).
+- CMCE no longer drops a live call when a radio's location update with a group report arrives as
+  "deaffiliate all + affiliate reported": a group must stay without listeners for one multiframe
+  (about 1 s) before its calls are dropped. Before, the radio went silent mid-call while the
+  console still heard it (e.g. after the D-LOCATION UPDATE COMMAND sent on every Brew reconnect).
+
+## PHY: recovery from a stalled TX timeline — 2026-10-25
+
+- After an SDR/USB hiccup (RX buffer overrun) the RX side could keep a backlog of buffered
+  samples and read it at exactly the real-time rate forever. The modulator gets new slot bits
+  only once per RX slot, so every TX block came too late and was skipped: the cell stopped
+  transmitting ("No service") until the station was restarted (seen 2026-10-25, 90 000 warnings
+  in 3.5 min).
+- New `phy/components/tx_watchdog.rs`: when TX has produced nothing for 0.5 s while late, the
+  PHY drops the RX backlog and continues from the current SDR clock (at most once per 2 s). The
+  warning names how far RX was behind. About 100 ms of uplink is lost once instead of the cell.
+- "Too late to produce TX block" is logged once per 5 s with the number of late blocks instead
+  of once per block (the flood itself slowed the PHY thread down).
+
 ## Protocol v3 — 2026-10-25 (platform 0.6.0)
 
 - New `NodeToCore::BackhaulStatus { brew_configured, brew_connected }`, sent with every

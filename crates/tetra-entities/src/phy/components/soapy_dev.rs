@@ -18,6 +18,7 @@ use super::dsp_types::*;
 use super::fcfb;
 use super::modulator;
 use super::soapyio;
+use super::tx_watchdog::{self, TxLateWatchdog};
 
 pub struct SdrConfig<'a> {
     /// SoapySDR device arguments
@@ -197,6 +198,46 @@ impl RxTxDevSoapySdr {
         }
     }
 
+    /// Drop the RX samples the driver has buffered beyond real time, so RX (and with it the TX
+    /// timeline, which is fed once per RX slot) continues from the current hardware time. The
+    /// next RX read then sees the jump and realigns its blocks like after lost samples.
+    fn catch_up_rx(&mut self) -> Result<(), RxTxDevError> {
+        let Some(rx_dsp) = &mut self.rx_dsp else { return Ok(()) };
+        let hw = self.sdr.rx_current_count()?;
+        let rx_next = self.sdr.rx_next_count();
+        let block = rx_dsp.rx_block_size.new as SampleCount;
+        let mut to_drop = tx_watchdog::rx_catch_up_samples(hw, rx_next, block);
+        let resyncs = self.tx_dsp.as_ref().map_or(0, |tx| tx.watchdog.resyncs);
+        let behind_ms = (hw - rx_next) as f64 * 1000.0 / self.sdr.rx_sample_rate();
+        if to_drop == 0 {
+            tracing::warn!(
+                "PHY: TX timeline stalled but RX is only {:.0} ms behind the SDR clock; nothing to drop (resync #{})",
+                behind_ms,
+                resyncs
+            );
+            return Ok(());
+        }
+        tracing::warn!(
+            "PHY: TX timeline stalled — RX is {:.0} ms behind the SDR clock (buffered after an SDR/USB hiccup).              Dropping {} RX samples to resync (resync #{})",
+            behind_ms,
+            to_drop,
+            resyncs
+        );
+        let mut empty_reads = 0;
+        while to_drop > 0 {
+            let n = (to_drop as usize).min(rx_dsp.rx_buffer.len());
+            let got = self.sdr.receive(&mut rx_dsp.rx_buffer[..n])?.len;
+            if got == 0 {
+                empty_reads += 1;
+                if empty_reads > 8 {
+                    break;
+                }
+            }
+            to_drop -= got as SampleCount;
+        }
+        Ok(())
+    }
+
     /// Produce a block of transmit signal.
     /// Return true if processing can be continued,
     /// false if more data is needed
@@ -220,6 +261,12 @@ impl RxTxDev for RxTxDevSoapySdr {
         tx_slot: &[TxSlotBits],
         // TODO multiple demodulators
     ) -> Result<Vec<Option<RxSlotBits<'a>>>, RxTxDevError> {
+        // A stalled TX timeline (RX backlog after an SDR hiccup): drop the backlog first.
+        let resync = self.tx_dsp.as_mut().is_some_and(|tx| tx.watchdog.take_resync(std::time::Instant::now()));
+        if resync {
+            self.catch_up_rx()?;
+        }
+
         // First generate as much TX signal as possible at the moment.
         while self.process_tx_block(tx_slot)? {}
 
@@ -434,6 +481,8 @@ struct TxDsp {
     initial_time: i64,
     modulators: Vec<ModulatorChannel>,
     monitor: Option<TxSignalMonitor>,
+    /// Notices a stalled TX timeline and rate-limits the "too late" warning.
+    watchdog: TxLateWatchdog,
     /// Scratch buffer reused for cloning the fcfb output when the TX monitor
     /// wants to inspect it. Kept on the struct so we don't allocate on every
     /// monitored block; capacity grows once to fcfb output_block_size and stays.
@@ -479,6 +528,7 @@ impl TxDsp {
             initial_time: 0, // TODO: get it from RX
             modulators,
             monitor,
+            watchdog: TxLateWatchdog::new(),
             tx_signal_scratch: Vec::new(),
         }
     }
@@ -498,11 +548,17 @@ impl TxDsp {
         let dmin = 2; // how many blocks in future minimum
         if d < dmin {
             let new_block_count = current_block + dmin;
-            tracing::warn!(
-                "Too late to produce TX block {}, skipping {} TX blocks",
-                self.block_count,
-                new_block_count - self.block_count
-            );
+            // One warning per 5 s with the count, not one per block: a stalled timeline
+            // produced hundreds per second, which slowed the PHY thread down further.
+            if let Some(n) = self.watchdog.on_late(std::time::Instant::now()).log {
+                tracing::warn!(
+                    "Too late to produce TX block {}, skipping {} TX blocks ({} late in the last {} s)",
+                    self.block_count,
+                    new_block_count - self.block_count,
+                    n,
+                    tx_watchdog::LATE_LOG_INTERVAL.as_secs()
+                );
+            }
             self.block_count = new_block_count;
         }
         // Limit how far into future TX blocks are generated
@@ -561,6 +617,7 @@ impl TxDsp {
         // Increment block count before calling sdr.transmit with ?,
         // so we do not end up producing the same block again even if transmit fails.
         self.block_count += 1;
+        self.watchdog.on_produced();
 
         if want_monitor {
             let sdr_sample_count = self.tx_signal_scratch.len() as SampleCount * block_count_now;

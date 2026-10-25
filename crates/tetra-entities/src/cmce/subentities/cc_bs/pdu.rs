@@ -11,6 +11,7 @@ impl CcBsSubentity {
             individual_calls: HashMap::new(),
             subscriber_groups: HashMap::new(),
             group_listeners: HashMap::new(),
+            unlistened_checks: HashMap::new(),
             telemetry: None,
         }
     }
@@ -405,7 +406,28 @@ impl CcBsSubentity {
         }
     }
 
-    pub fn handle_subscriber_update(&mut self, queue: &mut MessageQueue, update: MmSubscriberUpdate) {
+    /// A group lost a listener: check it again after the grace period (see `unlistened_checks`).
+    pub(super) fn schedule_unlistened_check(&mut self, gssi: u32) {
+        if !self.has_listener(gssi) {
+            self.unlistened_checks.insert(gssi, self.dltime);
+        }
+    }
+
+    /// Groups whose grace period is over at `now` (removed from the pending set).
+    pub(super) fn take_due_unlistened(&mut self, now: TdmaTime) -> Vec<u32> {
+        let due: Vec<u32> = self
+            .unlistened_checks
+            .iter()
+            .filter(|(_, since)| since.age(now) >= super::timers::UNLISTENED_GRACE_TS)
+            .map(|(gssi, _)| *gssi)
+            .collect();
+        for gssi in &due {
+            self.unlistened_checks.remove(gssi);
+        }
+        due
+    }
+
+    pub fn handle_subscriber_update(&mut self, _queue: &mut MessageQueue, update: MmSubscriberUpdate) {
         let issi = update.issi;
         let groups = update.groups;
 
@@ -419,7 +441,7 @@ impl CcBsSubentity {
                 if let Some(existing) = self.subscriber_groups.remove(&issi) {
                     for gssi in existing {
                         self.dec_group_listener(gssi);
-                        self.drop_group_calls_if_unlistened(queue, gssi);
+                        self.schedule_unlistened_check(gssi);
                     }
                     tracing::debug!("CMCE: subscriber deregister issi={}", issi);
                 } else {
@@ -470,7 +492,7 @@ impl CcBsSubentity {
                 } else {
                     tracing::info!("CMCE: subscriber deaffiliate issi={} groups={:?}", issi, removed_groups);
                     for gssi in &removed_groups {
-                        self.drop_group_calls_if_unlistened(queue, *gssi);
+                        self.schedule_unlistened_check(*gssi);
                     }
                 }
             }
@@ -1391,6 +1413,65 @@ codec = "PCMU"
         assert_eq!(cc.asterisk_route_number(&network_call(91601, "")), Some("601".to_string()));
         assert_eq!(cc.asterisk_route_number(&network_call(0, "91601")), Some("601".to_string()));
         assert_eq!(cc.asterisk_route_number(&network_call(601, "")), None);
+    }
+
+    fn plain_test_cc() -> CcBsSubentity {
+        let toml = r#"
+config_version = "0.6"
+stack_mode = "Bs"
+
+[phy_io]
+backend = "None"
+
+[net_info]
+mcc = 901
+mnc = 9999
+
+[cell_info]
+main_carrier = 1584
+freq_band = 4
+freq_offset = 0
+duplex_spacing = 4
+reverse_operation = false
+location_area = 1
+"#;
+        let cfg = tetra_config::bluestation::parsing::from_toml_str(toml).expect("test config must parse");
+        CcBsSubentity::new(tetra_config::bluestation::SharedConfig::from_parts(cfg, None))
+    }
+
+    fn update(issi: u32, groups: Vec<u32>, action: tetra_saps::control::brew::BrewSubscriberAction) -> tetra_saps::control::brew::MmSubscriberUpdate {
+        tetra_saps::control::brew::MmSubscriberUpdate { issi, groups, action }
+    }
+
+    #[test]
+    fn group_report_churn_does_not_count_as_leaving_the_group() {
+        use tetra_saps::control::brew::BrewSubscriberAction::*;
+        let mut cc = plain_test_cc();
+        let mut queue = crate::MessageQueue::new();
+        cc.handle_subscriber_update(&mut queue, update(7, vec![], Register));
+        cc.handle_subscriber_update(&mut queue, update(7, vec![91], Affiliate));
+        // Location update with a group report: "detach all" then "attach reported" back to back.
+        cc.handle_subscriber_update(&mut queue, update(7, vec![91], Deaffiliate));
+        cc.handle_subscriber_update(&mut queue, update(7, vec![91], Affiliate));
+        assert!(cc.has_listener(91), "the radio is still on the group");
+        let later = cc.dltime.add_timeslots(super::super::timers::UNLISTENED_GRACE_TS + 4);
+        let due = cc.take_due_unlistened(later);
+        assert!(due.iter().all(|g| cc.has_listener(*g)), "nothing to drop: {due:?}");
+    }
+
+    #[test]
+    fn a_group_left_for_good_is_checked_after_the_grace_period() {
+        use tetra_saps::control::brew::BrewSubscriberAction::*;
+        let mut cc = plain_test_cc();
+        let mut queue = crate::MessageQueue::new();
+        cc.handle_subscriber_update(&mut queue, update(7, vec![], Register));
+        cc.handle_subscriber_update(&mut queue, update(7, vec![91], Affiliate));
+        cc.handle_subscriber_update(&mut queue, update(7, vec![91], Deaffiliate));
+        assert!(!cc.has_listener(91));
+        let t0 = cc.dltime;
+        assert!(cc.take_due_unlistened(t0.add_timeslots(10)).is_empty(), "not yet");
+        assert_eq!(cc.take_due_unlistened(t0.add_timeslots(super::super::timers::UNLISTENED_GRACE_TS)), vec![91]);
+        assert!(cc.take_due_unlistened(t0.add_timeslots(1000)).is_empty(), "checked once");
     }
 
     #[test]

@@ -21,6 +21,10 @@ pub(super) const EE_DSETUP_FALLBACK_TS: i32 = 423;
 /// 72 = 18 frames × 4 slots.)
 pub(super) const NETWORK_MEDIA_INACTIVITY_TS: i32 = 10 * 18 * 4;
 
+/// How long a group may be without listeners before its calls are dropped: one multiframe
+/// (about 1 s, 18 frames × 4 slots). Covers the deaffiliate/affiliate pair of a group report.
+pub(super) const UNLISTENED_GRACE_TS: i32 = 18 * 4;
+
 impl CcBsSubentity {
     pub fn tick_start(&mut self, queue: &mut MessageQueue, dltime: TdmaTime) {
         self.dltime = dltime;
@@ -33,6 +37,10 @@ impl CcBsSubentity {
         self.check_hangtime_expiry(queue);
         // Reclaim a network group-call timeslot whose backhaul media died without a GROUP_IDLE.
         self.check_network_media_inactivity(queue);
+        // Drop calls of groups that stayed without listeners for the grace period.
+        for gssi in self.take_due_unlistened(dltime) {
+            self.drop_group_calls_if_unlistened(queue, gssi);
+        }
 
         // Energy-economy group-call announce batching: re-emit the group D-SETUP across the
         // union of affiliated EE members' wake frames so members on a different sleep phase

@@ -74,6 +74,8 @@ groups are kept in `recovery_cache.json` next to the config.
 | Console: kick / re-register / position request (protocol v2) | CMCE `KickMs`; MM D-LOCATION UPDATE COMMAND with group report; SDS type 4 carrying a LIP IMMEDIATE LOCATION REPORT REQUEST (TS 100 392-18-1 §6.2.16) |
 | Ban list in `Settings` (v2) | a banned ISSI cannot register or attach groups; registered banned radios are kicked |
 | `MonitorSet { all }` (v2) | every group call is monitored, network (Brew, SIP) speakers included — receive only |
+| `StationInfo` (v4) | with every `NodeStatus`: repeater ID, Brew host, colour code, neighbour cells, dispatch ranges |
+| `[dispatcher] local_groups` (default `true`) | the dispatcher may use every local-only group (`cell.local_ssi_ranges`), Brew-routable groups stay refused |
 | `BackhaulStatus` (v3) | with every `NodeStatus`: is a `[brew]` section configured, is Brew connected (`network_connected`) — shown as the station's Brew state in the console |
 | Every 10 s | `NodeStatus`: uptime, carriers, MCC/MNC/LA, registered radios, calls, timeslots, CPU temperature |
 

@@ -15,7 +15,8 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use dispatch_proto::{
-    CallPriority, CarrierInfo, CoreToNode, Gssi, Issi, NodeStatus, NodeToCore, PROTOCOL_VERSION, RadioAction, VoiceDatagram,
+    CallPriority, CarrierInfo, CoreToNode, Gssi, GssiRange, Issi, NeighbourCell, NodeStatus, NodeToCore, PROTOCOL_VERSION, RadioAction, StationInfo,
+    VoiceDatagram,
     settings::validate_issi,
 };
 use tetra_config::bluestation::SharedConfig;
@@ -654,7 +655,37 @@ impl<T: NetworkTransport> DispatcherWorker<T> {
             Some(station) => (station.config().brew.is_some(), station.state_read().network_connected),
             None => (false, false),
         };
-        self.send(&NodeToCore::NodeStatus(status)) && self.send(&NodeToCore::BackhaulStatus { brew_configured, brew_connected })
+        self.send(&NodeToCore::NodeStatus(status))
+            && self.send(&NodeToCore::BackhaulStatus { brew_configured, brew_connected })
+            && self.send(&NodeToCore::StationInfo(self.station_info()))
+    }
+
+    /// Protocol v4: repeater ID (the `[brew]` username), Brew server, colour code, neighbours.
+    fn station_info(&self) -> StationInfo {
+        let Some(station) = &self.station else {
+            return StationInfo { repeater_id: None, brew_host: None, colour_code: 0, neighbours: Vec::new(), dispatch_ranges: Vec::new() };
+        };
+        let cfg = station.config();
+        let brew = cfg.brew.as_ref();
+        StationInfo {
+            repeater_id: brew.and_then(|b| b.username.as_deref()).and_then(|u| u.trim().parse().ok()),
+            brew_host: brew.map(|b| b.host.clone()),
+            colour_code: cfg.cell.colour_code,
+            neighbours: cfg
+                .cell
+                .neighbor_cells_ca
+                .iter()
+                .map(|n| NeighbourCell {
+                    cell_id: n.cell_identifier_ca,
+                    main_carrier: n.main_carrier_number,
+                    location_area: n.location_area,
+                    mcc: n.mcc,
+                    mnc: n.mnc,
+                    synchronized: n.neighbor_cell_synchronized,
+                })
+                .collect(),
+            dispatch_ranges: super::routing::dispatch_ranges(station).into_iter().map(|(start, end)| GssiRange { start, end }).collect(),
+        }
     }
 
     /// Recompute the effective ISSI, tell the entity, optionally report to the core.
@@ -881,6 +912,7 @@ mod tests {
         // Status report right after Hello.
         assert!(transport.sent().iter().any(|m| matches!(m, NodeToCore::NodeStatus(s) if s.registered == 0)), "status sent after Hello");
         assert!(transport.sent().iter().any(|m| matches!(m, NodeToCore::BackhaulStatus { brew_configured: false, .. })), "backhaul status sent with it");
+        assert!(transport.sent().iter().any(|m| matches!(m, NodeToCore::StationInfo(i) if i.repeater_id.is_none())), "station info sent with it");
 
         // A resync replays the radio with its groups, then the settings.
         tsink.send(TelemetryEvent::MsGroupsSnapshot { issi: 2_603_877, gssis: vec![91, 401] });

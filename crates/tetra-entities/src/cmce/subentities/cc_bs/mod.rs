@@ -74,6 +74,12 @@ pub struct CcBsSubentity {
     subscriber_groups: HashMap<u32, HashSet<u32>>,
     /// Listener counts per GSSI
     group_listeners: HashMap<u32, usize>,
+    /// Groups that lost a listener, with the time it happened: their calls are dropped only if
+    /// the group is still unlistened after [`timers::UNLISTENED_GRACE_TS`]. A group report in a
+    /// location update arrives as "deaffiliate all" + "affiliate reported" back to back; checking
+    /// right after the first half dropped live network calls while the radio stayed on the
+    /// group (console heard the call, the radio went silent).
+    unlistened_checks: HashMap<u32, TdmaTime>,
     /// Dashboard telemetry sink (call-lifecycle events). `None` when telemetry is disabled.
     telemetry: Option<crate::net_telemetry::TelemetrySink>,
 }

@@ -43,6 +43,7 @@ impl Harness {
             default_priority: 0,
             max_tx_seconds,
             link_timeout_ms: 6000,
+            local_groups: false,
         });
         let shared = ComponentTest::from_config(config, None).get_shared_config();
         let (event_tx, event_rx) = bounded(64);

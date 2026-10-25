@@ -2612,7 +2612,27 @@ fn dispatcher_cfg(gssis: Vec<u32>) -> tetra_config::bluestation::CfgDispatcher {
         default_priority: 0,
         max_tx_seconds: 60,
         link_timeout_ms: 6000,
+        local_groups: false,
     }
+}
+
+#[test]
+fn dispatcher_may_use_every_local_group_but_never_a_brew_group() {
+    use tetra_entities::net_dispatcher::routing;
+    let mut config = ComponentTest::get_default_test_config(StackMode::Bs);
+    config.brew = Some(test_brew_cfg());
+    config.cell.local_ssi_ranges = tetra_core::ranges::SortedDisjointSsiRanges::from_vec_tuple(vec![(0, 90)]);
+    let mut d = dispatcher_cfg(vec![10]);
+    d.local_groups = true;
+    config.dispatcher = Some(d);
+    let test = ComponentTest::from_config(config, None);
+    let shared = test.get_shared_config();
+    assert!(routing::is_dispatch_gssi(&shared, 10), "listed group");
+    assert!(routing::is_dispatch_gssi(&shared, 11), "local group, not listed");
+    assert!(!routing::is_dispatch_gssi(&shared, 91), "Brew-routable group: never");
+    assert!(routing::gate_call(&shared, 11).is_ok());
+    assert!(routing::gate_call(&shared, 91).is_err());
+    assert_eq!(routing::dispatch_ranges(&shared), vec![(10, 10), (1, 90)]);
 }
 
 /// Brew configured and the dispatch group local-only (as the startup validation demands),

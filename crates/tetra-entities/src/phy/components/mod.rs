@@ -13,6 +13,7 @@ pub mod soapy_time;
 pub mod soapyio;
 
 pub mod soapy_dev;
+pub mod tx_watchdog;
 // pub mod _rxtxdev_buffer;
 
 pub mod slotter;

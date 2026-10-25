@@ -74,6 +74,8 @@ local_ssi_ranges = [[91, 91]]
 | Консоль: kick / перереєстрація / запит позиції (протокол v2) | CMCE `KickMs`; MM D-LOCATION UPDATE COMMAND із запитом звіту груп; SDS типу 4 з LIP IMMEDIATE LOCATION REPORT REQUEST (TS 100 392-18-1 §6.2.16) |
 | Список банів у `Settings` (v2) | забанений ISSI не може зареєструватися чи приєднатися до групи; зареєстровані забанені радіостанції відключаються |
 | `MonitorSet { all }` (v2) | прослуховуються всі групові виклики, разом із мережевими (Brew, SIP) мовцями — лише прийом |
+| `StationInfo` (v4) | з кожним `NodeStatus`: repeater ID, хост Brew, код кольору, сусідні комірки, діапазони диспетчера |
+| `[dispatcher] local_groups` (типово `true`) | диспетчер може використовувати кожну лише локальну групу (`cell.local_ssi_ranges`), групи Brew і далі відхиляються |
 | `BackhaulStatus` (v3) | з кожним `NodeStatus`: чи є секція `[brew]`, чи підключено Brew (`network_connected`) — у консолі це стан Brew станції |
 | Кожні 10 с | `NodeStatus`: час роботи, несучі, MCC/MNC/LA, зареєстровані радіостанції, виклики, таймслоти, температура CPU |
 

@@ -38,6 +38,9 @@ pub struct CfgDispatcher {
     pub default_priority: u8,
     pub max_tx_seconds: u32,
     pub link_timeout_ms: u32,
+    /// Also allow the dispatcher on every local-only group (`cell.local_ssi_ranges`, or every
+    /// group when Brew is not configured). Brew-routable groups stay refused.
+    pub local_groups: bool,
 }
 
 #[derive(Deserialize)]
@@ -57,6 +60,8 @@ pub struct CfgDispatcherDto {
     pub max_tx_seconds: u32,
     #[serde(default = "default_link_timeout")]
     pub link_timeout_ms: u32,
+    #[serde(default = "default_true")]
+    pub local_groups: bool,
 
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
@@ -129,6 +134,7 @@ pub fn apply_dispatcher_patch(src: CfgDispatcherDto) -> Result<CfgDispatcher, St
         default_priority: src.default_priority,
         max_tx_seconds: src.max_tx_seconds,
         link_timeout_ms: src.link_timeout_ms,
+        local_groups: src.local_groups,
     })
 }
 

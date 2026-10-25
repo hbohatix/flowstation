@@ -389,6 +389,11 @@ impl SoapyIo {
         }
     }
 
+    /// Sample count of the next sample RX will read.
+    pub fn rx_next_count(&self) -> SampleCount {
+        self.rx_next_count
+    }
+
     /// Current hardware time as TX sample count
     pub fn tx_current_count(&self) -> Result<SampleCount, RxTxDevError> {
         if !self.tx_enabled() {
