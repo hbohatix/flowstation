@@ -5,6 +5,15 @@
 Зміни каналу `[dispatcher]` у цьому форку (гілка `feature/dispatcher-link`). Бік платформи:
 [CHANGELOG flowstation-platform](https://github.com/hbohatix/flowstation-platform/blob/main/CHANGELOG.uk.md).
 
+## Протокол v3 — 2026-10-25 (платформа 0.6.0)
+
+- Новий `NodeToCore::BackhaulStatus { brew_configured, brew_connected }`, що надсилається з
+  кожним `NodeStatus` (після Hello і кожні 10 с): чи є в станції секція `[brew]` і чи підключено
+  Brew (`network_connected` у стані стека). Консоль показує це як стан Brew станції. Лише
+  читання: у бік Brew нічого не надсилається.
+- Станція оголошує протокол 3. Потрібен core платформи 0.6.0 або новіший; core і далі приймає
+  станції v2, тож станції можна оновлювати по одній.
+
 ## Типи шини — 2026-10-25 (платформа 0.5.0)
 
 - `crates/dispatch-proto/src/bus.rs` повторює платформу: новий `CoreEvent::NodeLink { rtt_ms }`

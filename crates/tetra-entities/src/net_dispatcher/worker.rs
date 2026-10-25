@@ -649,7 +649,12 @@ impl<T: NetworkTransport> DispatcherWorker<T> {
 
     fn send_status(&mut self) -> bool {
         let status = self.node_status();
-        self.send(&NodeToCore::NodeStatus(status))
+        // Protocol v3: the network backhaul (Brew) as the station sees it.
+        let (brew_configured, brew_connected) = match &self.station {
+            Some(station) => (station.config().brew.is_some(), station.state_read().network_connected),
+            None => (false, false),
+        };
+        self.send(&NodeToCore::NodeStatus(status)) && self.send(&NodeToCore::BackhaulStatus { brew_configured, brew_connected })
     }
 
     /// Recompute the effective ISSI, tell the entity, optionally report to the core.
@@ -875,6 +880,7 @@ mod tests {
 
         // Status report right after Hello.
         assert!(transport.sent().iter().any(|m| matches!(m, NodeToCore::NodeStatus(s) if s.registered == 0)), "status sent after Hello");
+        assert!(transport.sent().iter().any(|m| matches!(m, NodeToCore::BackhaulStatus { brew_configured: false, .. })), "backhaul status sent with it");
 
         // A resync replays the radio with its groups, then the settings.
         tsink.send(TelemetryEvent::MsGroupsSnapshot { issi: 2_603_877, gssis: vec![91, 401] });

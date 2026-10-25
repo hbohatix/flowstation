@@ -5,6 +5,15 @@
 Changes of the `[dispatcher]` link in this fork (branch `feature/dispatcher-link`). The platform
 side: [flowstation-platform CHANGELOG](https://github.com/hbohatix/flowstation-platform/blob/main/CHANGELOG.md).
 
+## Protocol v3 — 2026-10-25 (platform 0.6.0)
+
+- New `NodeToCore::BackhaulStatus { brew_configured, brew_connected }`, sent with every
+  `NodeStatus` (after Hello and every 10 s): whether the station has a `[brew]` section and whether
+  Brew is connected (`network_connected` in the stack state). The console shows it as the
+  station's Brew state. Read-only: nothing is sent towards Brew.
+- The station announces protocol 3. It needs platform core 0.6.0 or newer; the core still
+  accepts v2 stations, so stations can be updated one by one.
+
 ## Bus types — 2026-10-25 (platform 0.5.0)
 
 - `crates/dispatch-proto/src/bus.rs` follows the platform: new `CoreEvent::NodeLink { rtt_ms }`

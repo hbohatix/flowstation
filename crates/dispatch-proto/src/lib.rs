@@ -1,4 +1,4 @@
-//! COPY of hbohatix/flowstation-platform `crates/proto` (protocol v1) — do not edit here; change
+//! COPY of hbohatix/flowstation-platform `crates/proto` (protocol v3) — do not edit here; change
 //! the protocol in flowstation-platform and re-copy so both sides stay byte-compatible.
 //!
 //! Wire protocol `flowstation-dispatch-v0`.
@@ -30,7 +30,11 @@ use bitcode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 
 /// Protocol version carried in [`NodeToCore::Hello`]. Bump on any incompatible change.
-pub const PROTOCOL_VERSION: u16 = 2;
+/// v3 adds [`NodeToCore::BackhaulStatus`] at the end of the enum; a v2 node still works.
+pub const PROTOCOL_VERSION: u16 = 3;
+
+/// Oldest node protocol the core accepts (later versions only append messages).
+pub const MIN_PROTOCOL_VERSION: u16 = 2;
 
 /// ALPN identifier for the QUIC node link.
 pub const ALPN: &[u8] = b"flowstation-dispatch-v0";
@@ -170,6 +174,10 @@ pub enum NodeToCore {
     // ----- v2 -----
     /// Sent after Hello and every 10 s.
     NodeStatus(NodeStatus),
+    // ----- v3 -----
+    /// State of the node's network backhaul (Brew / TetraPACK), sent with every
+    /// [`NodeToCore::NodeStatus`]. `brew_configured: false` = the node has no `[brew]` section.
+    BackhaulStatus { brew_configured: bool, brew_connected: bool },
 }
 
 /// Messages the core sends to a node on the reliable stream.
