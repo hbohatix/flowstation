@@ -31,6 +31,13 @@ pub enum ControlCommand {
         payload: Vec<u8>,
     },
 
+    /// Send a pre-coded status (D-STATUS, EN 300 392-2 §14.7.1.11) to a radio or a group.
+    SendStatus { handle: u32, source_ssi: u32, dest_ssi: u32, dest_is_group: bool, status: u16 },
+
+    /// Acknowledge a radio's emergency alarm: D-STATUS Emergency from `from_ssi` (the alarm's
+    /// destination) to `issi`.
+    AckEmergency { handle: u32, issi: u32, from_ssi: u32 },
+
     /// Forcibly deregister a terminal from the BS
     KickMs { issi: u32 },
 

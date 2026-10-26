@@ -1,4 +1,4 @@
-//! COPY of hbohatix/flowstation-platform `crates/proto` (protocol v4) — do not edit here; change
+//! COPY of hbohatix/flowstation-platform `crates/proto` (protocol v5) — do not edit here; change
 //! the protocol in flowstation-platform and re-copy so both sides stay byte-compatible.
 //!
 //! Wire protocol `flowstation-dispatch-v0`.
@@ -30,9 +30,10 @@ use bitcode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 
 /// Protocol version carried in [`NodeToCore::Hello`]. Bump on any incompatible change.
-/// v3 adds [`NodeToCore::BackhaulStatus`], v4 [`NodeToCore::StationInfo`], both at the end of
-/// the enum; older nodes still work.
-pub const PROTOCOL_VERSION: u16 = 4;
+/// v3 adds [`NodeToCore::BackhaulStatus`], v4 [`NodeToCore::StationInfo`], v5 location reports
+/// with reason, statuses, emergency end reasons and [`CoreToNode::SendStatus`] — always at the
+/// end of the enums, so older nodes still work.
+pub const PROTOCOL_VERSION: u16 = 5;
 
 /// Oldest node protocol the core accepts (later versions only append messages).
 pub const MIN_PROTOCOL_VERSION: u16 = 2;
@@ -163,6 +164,42 @@ pub struct StationInfo {
     pub dispatch_ranges: Vec<GssiRange>,
 }
 
+/// A valid position from a LIP report (TS 100 392-18-1 §6.2.1 / §6.2.2).
+#[derive(Debug, Clone, PartialEq, Encode, Decode, Serialize, Deserialize)]
+pub struct GeoFix {
+    pub lat: f64,
+    pub lon: f64,
+    pub accuracy_m: Option<f32>,
+    pub speed_kmh: Option<f32>,
+    pub heading_deg: Option<f32>,
+    pub altitude_m: Option<i32>,
+}
+
+/// Every LIP location report a radio sends (protocol v5). `fix: None` = the radio could not
+/// determine its position (position error "not known", no shape, or 0/0) — it is still a
+/// report, with its reason.
+#[derive(Debug, Clone, PartialEq, Encode, Decode, Serialize, Deserialize)]
+pub struct LocationReport {
+    pub issi: Issi,
+    pub fix: Option<GeoFix>,
+    /// Reason for sending (TS 100 392-18-1 §6.3.64, table 6.94): 0 power on, 2 emergency,
+    /// 20 user application, 32 response to an immediate request, 129 max interval, …
+    pub reason: Option<u8>,
+    /// Long location report (else short).
+    pub long: bool,
+}
+
+/// Why an emergency ended on the station (protocol v5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode, Serialize, Deserialize)]
+pub enum EmergencyEnd {
+    /// The radio sent a normal status after the emergency.
+    Radio,
+    /// No more emergency statuses for the station's clear timeout — the radio did NOT cancel.
+    Timeout,
+    /// Cleared on the station (its dashboard).
+    Operator,
+}
+
 /// Messages a FlowStation node sends to the core on the reliable stream.
 #[derive(Debug, Clone, PartialEq, Encode, Decode, Serialize, Deserialize)]
 pub enum NodeToCore {
@@ -222,6 +259,14 @@ pub enum NodeToCore {
     // ----- v4 -----
     /// Repeater ID, Brew server, colour code and neighbour cells, with every `NodeStatus`.
     StationInfo(StationInfo),
+    // ----- v5 -----
+    /// Every LIP report, with its reason and whether it carries a position.
+    MsLocation(LocationReport),
+    /// A pre-coded status (U-STATUS, EN 300 392-2 §14.8.34) sent by a radio: 0 = emergency,
+    /// 32768–65535 network / user specific. SDS-TL short reports are not included.
+    StatusReceived { source_issi: Issi, dest_ssi: u32, dest_is_group: bool, status: u16 },
+    /// The emergency of a radio ended on the station, and why.
+    EmergencyEnded { issi: Issi, by: EmergencyEnd },
 }
 
 /// Messages the core sends to a node on the reliable stream.
@@ -252,6 +297,13 @@ pub enum CoreToNode {
     // ----- v2 -----
     /// Operator action on one radio, answered with [`NodeToCore::CommandResult`].
     RadioCommand { req_id: ReqId, issi: Issi, action: RadioAction },
+    // ----- v5 -----
+    /// Send a pre-coded status (D-STATUS) from the dispatcher ISSI. Answered with `CommandResult`.
+    SendStatus { req_id: ReqId, dest_ssi: u32, dest_is_group: bool, status: u16 },
+    /// Acknowledge a radio's emergency alarm: D-STATUS "Emergency" from the address the alarm
+    /// was sent to (`from_ssi`) back to the radio, which ends its alarm retries ("console
+    /// acknowledge" in the terminal's programming). Answered with `CommandResult`.
+    AckEmergency { req_id: ReqId, issi: Issi, from_ssi: u32 },
 }
 
 #[cfg(test)]

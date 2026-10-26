@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use dispatch_proto::{
-    CallPriority, CarrierInfo, CoreToNode, Gssi, GssiRange, Issi, NeighbourCell, NodeStatus, NodeToCore, PROTOCOL_VERSION, RadioAction, StationInfo,
+    CallPriority, CarrierInfo, CoreToNode, EmergencyEnd, GeoFix, Gssi, GssiRange, Issi, LocationReport, NeighbourCell, NodeStatus, NodeToCore, PROTOCOL_VERSION, RadioAction, StationInfo,
     VoiceDatagram,
     settings::validate_issi,
 };
@@ -134,15 +134,32 @@ pub fn telemetry_to_core(event: &TelemetryEvent) -> Option<NodeToCore> {
             NodeToCore::SpeakerChanged { call_id: *call_id, gssi: *dest_addr, speaker_issi: *speaker_issi }
         }
         TelemetryEvent::EmergencyAlarm { source_issi, dest_ssi } => NodeToCore::Emergency { issi: *source_issi, gssi: *dest_ssi },
-        TelemetryEvent::EmergencyCancel { source_issi } => NodeToCore::EmergencyCleared { issi: *source_issi },
-        TelemetryEvent::MsPosition { issi, position } => NodeToCore::MsPosition {
-            issi: *issi,
-            lat: position.lat,
-            lon: position.lon,
-            accuracy_m: position.position_error_m.or(position.horizontal_uncertainty_m),
-            speed_kmh: position.speed_kmh,
-            heading_deg: position.heading_deg,
+        // v5: why the emergency ended (a timeout is not a cancellation by the radio).
+        TelemetryEvent::EmergencyEnded { source_issi, reason } => NodeToCore::EmergencyEnded {
+            issi: *source_issi,
+            by: match reason {
+                1 => EmergencyEnd::Timeout,
+                2 => EmergencyEnd::Operator,
+                _ => EmergencyEnd::Radio,
+            },
         },
+        // v5: every LIP report, with its reason; the position only when it is valid.
+        TelemetryEvent::LipReport { issi, position, has_fix } => NodeToCore::MsLocation(LocationReport {
+            issi: *issi,
+            fix: has_fix.then(|| GeoFix {
+                lat: position.lat,
+                lon: position.lon,
+                accuracy_m: position.position_error_m.or(position.horizontal_uncertainty_m),
+                speed_kmh: position.speed_kmh,
+                heading_deg: position.heading_deg,
+                altitude_m: position.altitude_m,
+            }),
+            reason: position.reason_for_sending,
+            long: matches!(position.report_type, crate::net_location::TetraLipReportType::Long),
+        }),
+        TelemetryEvent::StatusMessage { source_issi, dest_ssi, dest_is_group, status } => {
+            NodeToCore::StatusReceived { source_issi: *source_issi, dest_ssi: *dest_ssi, dest_is_group: *dest_is_group, status: *status }
+        }
         TelemetryEvent::DgnaStatus(info) => NodeToCore::DgnaStatus {
             issi: info.issi,
             gssi: info.gssi,
@@ -349,7 +366,7 @@ impl<T: NetworkTransport> DispatcherWorker<T> {
             TelemetryEvent::GroupCallEnded { call_id, .. } => {
                 self.active_calls.remove(call_id);
             }
-            TelemetryEvent::MsPosition { issi, .. } => {
+            TelemetryEvent::LipReport { issi, has_fix: true, .. } => {
                 if let Some(msg) = telemetry_to_core(event) {
                     self.positions.insert(*issi, msg);
                 }
@@ -440,7 +457,13 @@ impl<T: NetworkTransport> DispatcherWorker<T> {
                             return SessionEnd::Lost("send failed".into());
                         }
                     }
-                    Ok(cmd @ (CoreToNode::Dgna { .. } | CoreToNode::SendSds { .. } | CoreToNode::RadioCommand { .. })) => {
+                    Ok(
+                        cmd @ (CoreToNode::Dgna { .. }
+                        | CoreToNode::SendSds { .. }
+                        | CoreToNode::RadioCommand { .. }
+                        | CoreToNode::SendStatus { .. }
+                        | CoreToNode::AckEmergency { .. }),
+                    ) => {
                         let result = self.run_console_command(cmd);
                         if !self.send(&result) {
                             return SessionEnd::Lost("send failed".into());
@@ -557,6 +580,14 @@ impl<T: NetworkTransport> DispatcherWorker<T> {
                         len_bits: (payload.len() * 8) as u16,
                         payload,
                     }),
+                };
+                (req_id, built)
+            }
+            CoreToNode::AckEmergency { req_id, issi, from_ssi } => (req_id, Ok(ControlCommand::AckEmergency { handle: req_id, issi, from_ssi })),
+            CoreToNode::SendStatus { req_id, dest_ssi, dest_is_group, status } => {
+                let built = match self.effective_issi {
+                    None => Err("no dispatcher ISSI to send from".to_string()),
+                    Some(source_ssi) => Ok(ControlCommand::SendStatus { handle: req_id, source_ssi, dest_ssi, dest_is_group, status }),
                 };
                 (req_id, built)
             }
@@ -698,6 +729,10 @@ impl<T: NetworkTransport> DispatcherWorker<T> {
             tracing::warn!("Dispatcher: settings not fully applied: {}", err);
         }
         self.effective_issi = applied.effective;
+        if let Some(station) = &self.station {
+            // CMCE terminates SDS and statuses to this ISSI and acknowledges them.
+            station.state_write().dispatcher_issi = applied.effective;
+        }
         self.emit(DispatcherEvent::DispatcherIssi(applied.effective));
         if report {
             return self.send(&NodeToCore::SettingsApplied {

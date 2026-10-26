@@ -232,6 +232,15 @@ pub enum TelemetryEvent {
         issi: u32,
         position: crate::net_location::TetraLipPosition,
     },
+    /// A pre-coded status (U-STATUS, EN 300 392-2 §14.8.34) from a radio, SDS-TL short reports
+    /// excluded. Appended last for bitcode wire-stability.
+    StatusMessage { source_issi: u32, dest_ssi: u32, dest_is_group: bool, status: u16 },
+    /// Every decoded LIP report, also those without a valid position (`has_fix` false), so the
+    /// reason for sending is not lost. `MsPosition` is only emitted for reports with a fix.
+    LipReport { issi: u32, position: crate::net_location::TetraLipPosition, has_fix: bool },
+    /// An emergency ended: `reason` 0 = the radio sent a normal status, 1 = clear timeout (the
+    /// radio did not cancel), 2 = operator clear.
+    EmergencyEnded { source_issi: u32, reason: u8 },
 }
 
 /// A single host-system sensor reading. Kept flat for easy JSON serialisation

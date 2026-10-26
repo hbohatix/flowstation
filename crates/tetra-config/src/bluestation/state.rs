@@ -517,6 +517,9 @@ pub struct StackState {
     /// Network-wide ban list pushed by the dispatcher platform (sorted). A banned ISSI may not
     /// register or attach groups, whatever the whitelist says.
     pub issi_banlist: Vec<u32>,
+    /// The ISSI the dispatcher link uses right now (platform setting or `[dispatcher]` fallback).
+    /// CMCE terminates SDS and statuses addressed to it locally and acknowledges them.
+    pub dispatcher_issi: Option<u32>,
     /// Runtime override for the WX/METAR service (dashboard toggle). See WxRuntimeOverride.
     pub wx_override: Option<WxRuntimeOverride>,
     /// Runtime override for Telegram alerts (dashboard editing). See TelegramRuntimeOverride.
@@ -709,6 +712,7 @@ impl Default for StackState {
             next_live_sds_id: 1,
             issi_whitelist_override: None,
             issi_banlist: Vec::new(),
+            dispatcher_issi: None,
             wx_override: None,
             telegram_override: None,
             dapnet_override: None,

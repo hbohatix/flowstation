@@ -88,6 +88,18 @@ impl CmceBs {
                     cep.respond(ControlResponse::SendSdsResponse { handle, success });
                 }
             }
+            ControlCommand::SendStatus { handle, source_ssi, dest_ssi, dest_is_group, status } => {
+                let success = sds.send_status_from_control(queue, source_ssi, dest_ssi, dest_is_group, status);
+                if let Some(cep) = responder {
+                    cep.respond(ControlResponse::SendSdsResponse { handle, success });
+                }
+            }
+            ControlCommand::AckEmergency { handle, issi, from_ssi } => {
+                let success = sds.ack_emergency_from_control(queue, issi, from_ssi);
+                if let Some(cep) = responder {
+                    cep.respond(ControlResponse::SendSdsResponse { handle, success });
+                }
+            }
             ControlCommand::KickMs { issi } => {
                 tracing::info!("CMCE: KickMs issi={} requested", issi);
                 let success = cc.kick_ms(queue, issi);

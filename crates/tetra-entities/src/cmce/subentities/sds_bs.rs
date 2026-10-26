@@ -233,6 +233,15 @@ impl SdsBsSubentity {
         if self.emergency_sessions.remove(&source_issi).is_some() {
             tracing::info!("EMERGENCY: ISSI {} cleared ({})", source_issi, reason);
             self.emit(TelemetryEvent::EmergencyCancel { source_issi });
+            // The dispatcher must not read a timeout as "cancelled by the radio".
+            let code = if reason == "timeout" {
+                1
+            } else if reason.starts_with("operator") {
+                2
+            } else {
+                0
+            };
+            self.emit(TelemetryEvent::EmergencyEnded { source_issi, reason: code });
         }
     }
 
@@ -278,10 +287,22 @@ impl SdsBsSubentity {
         // external telemetry consumers must still receive coordinates when geofencing is off.
         if direction == "rx" && protocol_id == 0x0A {
             if let Some(pos) = crate::net_location::decode_tetra_lip_position(data) {
-                self.emit(TelemetryEvent::MsPosition {
-                    issi: source_issi,
-                    position: pos,
-                });
+                // TS 100 392-18-1 table 6.1 note 4: "Position error not known" = no valid
+                // location data; a long report with "no shape" or 0/0 carries none either.
+                let has_fix = crate::net_location::has_fix(&pos);
+                self.emit(TelemetryEvent::LipReport { issi: source_issi, position: pos.clone(), has_fix });
+                if has_fix {
+                    self.emit(TelemetryEvent::MsPosition {
+                        issi: source_issi,
+                        position: pos,
+                    });
+                } else {
+                    tracing::info!(
+                        "LIP: ISSI {} reports no valid position (reason {:?})",
+                        source_issi,
+                        pos.reason_for_sending
+                    );
+                }
             }
         }
 
@@ -470,6 +491,26 @@ impl SdsBsSubentity {
                 self.send_d_sds_data(queue, wx.service_issi, source_ssi, SsiType::Issi, report);
             }
             self.handle_wx_request(source_ssi, &pdu.user_defined_data);
+            self.emit(TelemetryEvent::SdsActivity {
+                source_issi: source_ssi,
+                dest_issi: dest_ssi,
+            });
+            return;
+        }
+
+        // Addressed to the dispatcher (the console): the station is the called party's SwMI and
+        // the console reads it over the dispatcher link, so terminate it here — never to Brew —
+        // and send the SDS-TL delivery report the terminal asked for (EN 300 392-2 §29.4.2.2,
+        // delivery report request §29.4.3.3). Without the report the terminal marks the
+        // message as failed although the console received it.
+        let dispatcher = self.config.state_read().dispatcher_issi;
+        if dispatcher == Some(dest_ssi) {
+            if !Self::is_sds_tl_report(&pdu.user_defined_data) {
+                for report in Self::sds_tl_reports_requested(&pdu.user_defined_data) {
+                    self.send_d_sds_data(queue, dest_ssi, source_ssi, SsiType::Issi, report);
+                }
+            }
+            tracing::info!("SDS: to the dispatcher {} from {}, consumed on the station", dest_ssi, source_ssi);
             self.emit(TelemetryEvent::SdsActivity {
                 source_issi: source_ssi,
                 dest_issi: dest_ssi,
@@ -814,13 +855,25 @@ impl SdsBsSubentity {
             pdu.pre_coded_status
         );
 
+        // Every status (not SDS-TL short reports) goes to the dispatcher link and the dashboard.
+        let dispatcher = self.config.state_read().dispatcher_issi;
+        if !matches!(pdu.pre_coded_status, PreCodedStatus::SdsTl(_)) {
+            let dest_is_group = self.config.state_read().subscribers.has_group_members(dest_ssi);
+            self.emit(TelemetryEvent::StatusMessage {
+                source_issi: source_ssi,
+                dest_ssi,
+                dest_is_group,
+                status: pdu.pre_coded_status.into_raw(),
+            });
+        }
+
         // Emergency-state tracking. The radio re-sends pre-coded status Emergency while in
         // emergency and is silent on exit: ENTER/REFRESH on Emergency, and a non-Emergency status
         // from the same ISSI CLEARS its session (the "first normal status = user cancelled" signal).
         // Skip the 9999 command channel (restart/kick_all/info statuses) so an unrelated command
         // status from a radio currently in emergency does not double as an emergency cancellation.
         // Local-only — evaluated before any Brew forward and gated by the [emergency] config below.
-        if dest_ssi != 9999 {
+        if dest_ssi != 9999 || dispatcher == Some(9999) {
             match pdu.pre_coded_status {
                 PreCodedStatus::Emergency => self.emergency_enter(source_ssi, dest_ssi),
                 // An SDS-TL short/delivery report (ETSI 29.4.2.3) also arrives as a U-STATUS with
@@ -832,6 +885,17 @@ impl SdsBsSubentity {
                 PreCodedStatus::SdsTl(_) => {}
                 _ => self.emergency_clear(source_ssi, "non-emergency status"),
             }
+        }
+
+        // A status to the dispatcher: the console is the called party. Close the transaction with
+        // the D-STATUS echo (as for 9999 below, EN 300 392-2 §14.7.1.11) — except Emergency, whose
+        // echo would raise an emergency on the sender — and keep it off Brew.
+        if dispatcher == Some(dest_ssi) && dest_ssi != 9999 {
+            if !matches!(pdu.pre_coded_status, PreCodedStatus::Emergency | PreCodedStatus::SdsTl(_)) {
+                self.send_d_status(queue, dest_ssi, source_ssi, pdu.pre_coded_status);
+            }
+            tracing::info!("SDS-STATUS: to the dispatcher {} from {}, consumed on the station", dest_ssi, source_ssi);
+            return;
         }
 
         // SDS command control: U-STATUS to ISSI 9999 from an authorized ISSI triggers
@@ -924,7 +988,36 @@ impl SdsBsSubentity {
     /// Otherwise it goes on the MCCH as before. Without this, an in-call MS never receives
     /// status messages and the U-STATUS feedback chain (e.g. SDS-TL delivery short reports)
     /// silently breaks during a QSO.
+    /// The console acknowledged a radio's emergency alarm. Terminals programmed for "console
+    /// acknowledge" retry the alarm until the destination answers; the answer is the Emergency
+    /// pre-coded status from that destination address back to the terminal.
+    pub fn ack_emergency_from_control(&mut self, queue: &mut MessageQueue, issi: u32, from_ssi: u32) -> bool {
+        if !self.config.state_read().subscribers.is_registered(issi) {
+            tracing::warn!("EMERGENCY: cannot acknowledge ISSI {} — not registered here", issi);
+            return false;
+        }
+        tracing::info!("EMERGENCY: acknowledging the alarm of ISSI {} (from {})", issi, from_ssi);
+        self.send_d_status_to(queue, from_ssi, issi, SsiType::Issi, PreCodedStatus::Emergency);
+        true
+    }
+
+    /// A status from the console (dispatcher ISSI) to a radio or a group.
+    pub fn send_status_from_control(&mut self, queue: &mut MessageQueue, source_issi: u32, dest_ssi: u32, dest_is_group: bool, status: u16) -> bool {
+        let status = PreCodedStatus::from(status);
+        if matches!(status, PreCodedStatus::SdsTl(_)) {
+            tracing::warn!("SDS-STATUS: refusing to send an SDS-TL short-report value as a status");
+            return false;
+        }
+        tracing::info!("SDS-STATUS: console status {} -> {} {}", status, if dest_is_group { "GSSI" } else { "ISSI" }, dest_ssi);
+        self.send_d_status_to(queue, source_issi, dest_ssi, if dest_is_group { SsiType::Gssi } else { SsiType::Issi }, status);
+        true
+    }
+
     fn send_d_status(&self, queue: &mut MessageQueue, source_issi: u32, dest_issi: u32, pre_coded_status: PreCodedStatus) {
+        self.send_d_status_to(queue, source_issi, dest_issi, SsiType::Issi, pre_coded_status);
+    }
+
+    fn send_d_status_to(&self, queue: &mut MessageQueue, source_issi: u32, dest_issi: u32, dest_type: SsiType, pre_coded_status: PreCodedStatus) {
         let pdu = DStatus {
             calling_party_type_identifier: PartyTypeIdentifier::Ssi,
             calling_party_address_ssi: Some(source_issi as u64),
@@ -943,7 +1036,7 @@ impl SdsBsSubentity {
         }
         sdu.seek(0);
 
-        let dest_addr = TetraAddress::new(dest_issi, SsiType::Issi);
+        let dest_addr = TetraAddress::new(dest_issi, dest_type);
 
         // Same FACCH-stealing routing as send_d_sds_data: an in-call MS is on its traffic
         // TS, not the MCCH. Reach it via stealing on that TS; the unacknowledged basic-link
@@ -1028,6 +1121,26 @@ impl SdsBsSubentity {
     /// not itself a report. Echoed back in the delivery confirmation, mirroring the
     /// `message_reference` the bot pulls in `parse_text_payload`. `None` when there is no
     /// usable SDS-TL header.
+    /// The SDS-TL REPORTs an SDS-TRANSFER asks for (EN 300 392-2 §29.4.2.2 / §29.4.3.3):
+    /// "received" → delivery status 0 (receipt acknowledged by destination), "consumed" →
+    /// 2 (consumed by destination). Each is `[PID, 0x10 (SDS-REPORT), status, MR]`.
+    pub(crate) fn sds_tl_reports_requested(data: &SdsUserData) -> Vec<SdsUserData> {
+        let bytes = data.to_arr();
+        // SDS-TL is used by the protocol identifiers 0x80..=0xFF (Annex J); LIP (0x0A) is not.
+        if bytes.len() < 3 || bytes[0] < 0x80 || bytes[1] >> 4 != 0 {
+            return Vec::new();
+        }
+        let (pid, drr, mr) = (bytes[0], (bytes[1] >> 2) & 0b11, bytes[2]);
+        let mut out = Vec::new();
+        if drr & 0b01 != 0 {
+            out.push(SdsUserData::Type4(32, vec![pid, 0x10, 0x00, mr]));
+        }
+        if drr & 0b10 != 0 {
+            out.push(SdsUserData::Type4(32, vec![pid, 0x10, 0x02, mr]));
+        }
+        out
+    }
+
     fn sds_tl_message_reference(data: &SdsUserData) -> Option<u8> {
         let bytes = data.to_arr();
         if bytes.len() >= 4 && matches!(bytes.first(), Some(0x82) | Some(0x89)) && bytes[1] != 0x10 {

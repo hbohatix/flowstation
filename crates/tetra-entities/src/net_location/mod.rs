@@ -31,6 +31,9 @@ pub enum TetraLipLocationShape {
     EllipseWithAltitudeAndUncertainty,
     Arc,
     PointWithPositionError,
+    /// Long report without location data (shape 0, "no shape"). Appended last for bitcode
+    /// wire-stability.
+    NoShape,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode, Serialize, Deserialize)]
@@ -335,6 +338,16 @@ fn read_additional_data(bits: &mut BitReader<'_>, position: &mut TetraLipPositio
 ///   velocity representation needed by the operator map.
 ///
 /// Other LIP control/request PDUs intentionally return `None`.
+/// The report carries a usable position: not "position error not known" (code 7, TS 100
+/// 392-18-1 table 6.1 note 4), not a long report without a shape, and not exactly 0/0
+/// (radios without a fix fill in zeros).
+pub fn has_fix(p: &TetraLipPosition) -> bool {
+    let unknown_error = matches!(p.location_shape, TetraLipLocationShape::PointWithPositionError) && p.position_error_code == Some(7);
+    let no_shape = matches!(p.location_shape, TetraLipLocationShape::NoShape);
+    let zero = p.lat.abs() < 1e-7 && p.lon.abs() < 1e-7;
+    !(unknown_error || no_shape || zero) && p.lat.is_finite() && p.lon.is_finite()
+}
+
 pub fn decode_tetra_lip_position(data: &SdsUserData) -> Option<TetraLipPosition> {
     let SdsUserData::Type4(len_bits, bytes) = data else {
         return None;
@@ -412,6 +425,17 @@ fn decode_long_after_shape(
     time_elapsed: Option<u8>,
     time_of_position: Option<TetraLipTimeOfPosition>,
 ) -> Option<TetraLipPosition> {
+    if shape == 0 {
+        // No shape: no coordinates follow, but velocity, acknowledgement request and the reason
+        // for sending still do.
+        let mut position = empty_position(0.0, 0.0, TetraLipReportType::Long, TetraLipLocationShape::NoShape);
+        position.time_elapsed = time_elapsed;
+        position.time_of_position = time_of_position;
+        read_velocity_data(bits, &mut position)?;
+        position.acknowledgement_requested = bits.read(1)? != 0;
+        read_additional_data(bits, &mut position)?;
+        return Some(position);
+    }
     let location_shape = match shape {
         1 => TetraLipLocationShape::Point,
         2 => TetraLipLocationShape::Circle,
@@ -483,6 +507,17 @@ fn decode_long_after_shape(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_fix_short_report_from_the_field() {
+        // MTP3550 without GPS fix, 2026-10-26: short report, time elapsed unknown, 0/0,
+        // position error "not known", velocity/direction unknown, reason 29.
+        let data = SdsUserData::Type4(84, vec![0x0A, 0x30, 0, 0, 0, 0, 0, 0x07, 0xFF, 0xE1, 0xD0]);
+        let p = decode_tetra_lip_position(&data).expect("decodes");
+        assert_eq!(p.position_error_code, Some(7));
+        assert_eq!(p.reason_for_sending, Some(29));
+        assert!(!has_fix(&p), "no fix: must not become a 0/0 position");
+    }
 
     fn push_bits(out: &mut Vec<u8>, value: u32, count: usize) {
         for bit in (0..count).rev() {

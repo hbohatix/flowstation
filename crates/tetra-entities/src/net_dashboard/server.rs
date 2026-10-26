@@ -1448,6 +1448,8 @@ impl DashboardServer {
                         }
                     }
                 }
+                // For the dispatcher link only; the dashboard has MsPosition and its SDS log.
+                TelemetryEvent::StatusMessage { .. } | TelemetryEvent::LipReport { .. } | TelemetryEvent::EmergencyEnded { .. } => {}
                 TelemetryEvent::DapnetLog {
                     direction,
                     id,
@@ -1657,6 +1659,8 @@ fn event_to_ws_msg(event: &TelemetryEvent) -> Option<String> {
         // Emergency add/remove are broadcast explicitly (transition-gated) from handle_telemetry,
         // so the generic path stays silent — otherwise every periodic re-send would re-broadcast.
         TelemetryEvent::EmergencyAlarm { .. } | TelemetryEvent::EmergencyCancel { .. } => return None,
+        // Dispatcher-link events: the dashboard shows positions (MsPosition), statuses in its SDS log.
+        TelemetryEvent::StatusMessage { .. } | TelemetryEvent::LipReport { .. } | TelemetryEvent::EmergencyEnded { .. } => return None,
         TelemetryEvent::DapnetLog {
             direction,
             id,

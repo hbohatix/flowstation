@@ -5,6 +5,23 @@
 Changes of the `[dispatcher]` link in this fork (branch `feature/dispatcher-link`). The platform
 side: [flowstation-platform CHANGELOG](https://github.com/hbohatix/flowstation-platform/blob/main/CHANGELOG.md).
 
+## Protocol v5: statuses, LIP reasons, SDS delivery reports — 2026-10-26 (platform 0.8.0)
+
+- SDS and statuses addressed to the dispatcher ISSI are terminated on the station (never Brew):
+  the station sends the SDS-TL delivery report the radio asks for (EN 300 392-2 §29.4.2.2 —
+  delivery status 0 "received" / 2 "consumed") and closes a status with the D-STATUS echo
+  (§14.7.1.11; not for Emergency). The dispatcher ISSI is kept in the stack state for CMCE.
+- Every pre-coded status goes to the platform (`StatusReceived`), the console can send one
+  (`SendStatus` → D-STATUS to an ISSI or a GSSI).
+- LIP: every report goes to the platform as `MsLocation` with its reason for sending; reports
+  with "position error not known" (TS 100 392-18-1 table 6.1 note 4), long reports with "no
+  shape" (now decoded) and 0/0 carry no position — and no longer put the radio at 0°/0° on the
+  station dashboard either.
+- `AckEmergency`: the console acknowledges an emergency alarm — D-STATUS Emergency from the
+  alarm's destination address to the radio, which ends its *console acknowledge* retries.
+- `EmergencyEnded { by }`: radio (normal status), timeout or operator, so the console does not
+  report a timeout as a cancellation by the radio.
+
 ## Dispatcher on every local group, protocol v4, no call drop on group reports — 2026-10-25 (platform 0.7.0)
 
 - `[dispatcher] local_groups` (default `true`): the dispatcher may transmit on every local-only
