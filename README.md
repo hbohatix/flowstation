@@ -100,6 +100,16 @@ cargo build --release
 ./target/release/bluestation-bs config.toml
 ```
 
+### Dispatcher console (this fork, branch `feature/dispatcher-link`)
+
+This fork adds a link to a [flowstation-platform](https://github.com/hbohatix/flowstation-platform)
+dispatcher console: dispatcher group calls, monitoring and recording, radios on a map, statuses,
+SDS, emergency alarms with acknowledgement. Dispatcher traffic stays in the cell and never reaches Brew.
+
+- Setup, step by step: **[Docs/dispatcher-setup.md](Docs/dispatcher-setup.md)** ([українська](Docs/uk/dispatcher-setup.md))
+- How the link behaves: [Docs/dispatcher-link.md](Docs/dispatcher-link.md) · changes: [Docs/dispatcher-changelog.md](Docs/dispatcher-changelog.md)
+- Platform side: [getting started](https://github.com/hbohatix/flowstation-platform/blob/main/docs/getting-started.md)
+
 ### As a systemd service
 
 ```bash

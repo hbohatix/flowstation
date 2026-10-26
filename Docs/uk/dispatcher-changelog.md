@@ -5,6 +5,13 @@
 Зміни каналу `[dispatcher]` у цьому форку (гілка `feature/dispatcher-link`). Бік платформи:
 [CHANGELOG flowstation-platform](https://github.com/hbohatix/flowstation-platform/blob/main/CHANGELOG.uk.md).
 
+## Документація — 2026-10-26
+
+- Нове покрокове налаштування: [dispatcher-setup.md](dispatcher-setup.md) (збірка, реєстрація в консолі, конфігурація, запуск і перевірка, вимкнення, несправності за рядками журналу).
+- [dispatcher-link.md](dispatcher-link.md): поведінка протоколу v5 (статуси, звіти доставки, причини LIP, підтвердження тривоги, завершення тривоги); виправлено приклад конфігурації — `gssis = [10]` усередині `local_ssi_ranges = [[0, 90]]` (старий приклад `[91]` не давав увімкнутися каналу), `server_name = "localhost"`, `local_groups`.
+- `example_config/config.toml`: те саме виправлення прикладу.
+- README: розділ *Dispatcher console* з посиланнями.
+
 ## Протокол v5: статуси, причини LIP, звіти доставки SDS — 2026-10-26 (платформа 0.8.0)
 
 - SDS і статуси на ISSI диспетчера завершуються на станції (ніколи не в Brew): станція надсилає

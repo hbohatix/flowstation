@@ -861,12 +861,13 @@ voice_service = true
 
 # [dispatcher]
 # server = "192.168.1.10:4433"
-# server_name = "core"
+# server_name = "localhost"
 # ca_cert = "/etc/flowstation/core-cert.pem"
 # node_id = "station-01"
 # token = "change-me"
-# gssis = [91]
+# gssis = [10]                # inside local_ssi_ranges above
 # fallback_issi = 9000001
 # default_priority = 0
 # max_tx_seconds = 60
 # link_timeout_ms = 6000
+# local_groups = true          # the dispatcher may also use every other local-only group

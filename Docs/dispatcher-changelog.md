@@ -5,6 +5,13 @@
 Changes of the `[dispatcher]` link in this fork (branch `feature/dispatcher-link`). The platform
 side: [flowstation-platform CHANGELOG](https://github.com/hbohatix/flowstation-platform/blob/main/CHANGELOG.md).
 
+## Documentation — 2026-10-26
+
+- New step-by-step setup: [dispatcher-setup.md](dispatcher-setup.md) (build, register in the console, configure, start and check, switch off, troubleshooting by log line).
+- [dispatcher-link.md](dispatcher-link.md): protocol v5 behaviour (statuses, delivery reports, LIP reasons, alarm acknowledgement, emergency end); config example fixed — `gssis = [10]` inside `local_ssi_ranges = [[0, 90]]` (the old `[91]` example would keep the link off), `server_name = "localhost"`, `local_groups`.
+- `example_config/config.toml`: the same example fix.
+- README: a *Dispatcher console* section with the links.
+
 ## Protocol v5: statuses, LIP reasons, SDS delivery reports — 2026-10-26 (platform 0.8.0)
 
 - SDS and statuses addressed to the dispatcher ISSI are terminated on the station (never Brew):

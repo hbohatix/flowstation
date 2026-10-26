@@ -13,7 +13,9 @@ Connects this FlowStation out to a [flowstation-platform](https://github.com/hbo
 - **control radios** — DGNA, SDS, kick, re-register request, position request, network-wide bans.
 
 The station carries ACELP frames only (35 bytes per 60 ms). The codec lives in the platform.
-Protocol version 2 (copy in `crates/dispatch-proto`).
+Protocol version 5; cores speaking version 2 or newer are accepted (copy in `crates/dispatch-proto`).
+
+**Setting it up step by step:** [dispatcher-setup.md](dispatcher-setup.md).
 
 ## Safety: dispatcher traffic never reaches Brew
 
@@ -30,24 +32,25 @@ A permanent test runs a full dispatcher call with Brew configured and asserts th
 ```toml
 [dispatcher]
 server = "192.168.1.10:4433"            # core QUIC address (host:port)
-server_name = "core"                    # name in the core certificate (default: host)
+server_name = "localhost"               # name in the core certificate (default: host)
 ca_cert = "/etc/flowstation/core-cert.pem"  # pin the core's certificate (PEM); omit = system CAs
 node_id = "station-01"
-token = "change-me"                     # issued by the console (System → Base stations)
-gssis = [91]                            # groups the dispatcher may call — local-only
+token = "change-me"                     # issued by the console (Base stations)
+gssis = [10]                            # groups the dispatcher may call — local-only
 fallback_issi = 9000001                 # used while the console setting is empty
 default_priority = 0                    # EN 300 392-2 table 14.46
 max_tx_seconds = 60                     # cut a dispatcher transmission after this long
 link_timeout_ms = 6000                  # end dispatcher TX this soon after the link dies
+local_groups = true                     # also every other local-only group (default)
 ```
 
 Make the dispatch groups local-only in `[cell_info]`:
 
 ```toml
-local_ssi_ranges = [[91, 91]]
+local_ssi_ranges = [[0, 90]]          # TG 0–90 stay in this cell, 91+ may go to Brew
 ```
 
-The console's **System → Base stations** page registers the station, shows its token once,
+The console's **Base stations** page registers the station, shows its token once,
 generates this section and offers the core certificate (`core-cert.pem`) for `ca_cert`.
 
 With `[dispatcher]` enabled, restart recovery (`[recovery]`) is always on: known radios and their
@@ -77,6 +80,12 @@ groups are kept in `recovery_cache.json` next to the config.
 | `StationInfo` (v4) | with every `NodeStatus`: repeater ID, Brew host, colour code, neighbour cells, dispatch ranges |
 | `[dispatcher] local_groups` (default `true`) | the dispatcher may use every local-only group (`cell.local_ssi_ranges`), Brew-routable groups stay refused |
 | `BackhaulStatus` (v3) | with every `NodeStatus`: is a `[brew]` section configured, is Brew connected (`network_connected`) — shown as the station's Brew state in the console |
+| Console: status (v5) | D-STATUS from the dispatcher ISSI to a radio or a group (EN 300 392-2 §14.8.34) |
+| Radio sends a status to the dispatcher ISSI (v5) | `StatusReceived` to the console; the station answers the radio itself, so it shows the status as delivered |
+| SDS to the dispatcher ISSI asking for a delivery report (v5) | SDS-REPORT *received* / *consumed* back to the radio (EN 300 392-2 §29.4.2.2) |
+| LIP report (v5) | `MsLocation` with the reason for sending (TS 100 392-18-1 table 6.94); a report with *position error: not known* is sent without a fix instead of 0.0 / 0.0 |
+| Console: acknowledge an emergency (v5) | D-STATUS *Emergency* from the alarm's destination address back to the radio: a radio set to *Emergency Console Acknowledge* stops re-sending the alarm |
+| Emergency ends (v5) | `EmergencyEnded` with who ended it: the radio (status), the station's timeout or an operator |
 | Every 10 s | `NodeStatus`: uptime, carriers, MCC/MNC/LA, registered radios, calls, timeslots, CPU temperature |
 
 Without a `[dispatcher]` section FlowStation behaves exactly as before.
